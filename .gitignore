@@ -1,0 +1,28 @@
+# Python (Node 2, Node 3)
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.env
+*.sqlite3
+*.db
+
+# C++ & CMake (Node 1)
+build/
+CMakeCache.txt
+CMakeFiles/
+*.o
+*.out
+
+# Qt C++ (Client)
+*.pro.user
+*.moc
+*.obj
+*.rcc
+*.exe
+Makefile
+
+# OS & IDE
+.DS_Store
+.vscode/
+.idea/
