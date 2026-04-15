@@ -1,0 +1,64 @@
+name: FalSight Integration CI
+
+# develop 브랜치로 PR이 생성되거나 코드가 업데이트될 때 자동 실행
+on:
+  pull_request:
+    branches: [ "develop" ]
+
+jobs:
+  # 1. Python 서버 (Node 3 메인 서버 & Node 2 AI 서버) 문법 검증
+  build-python:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10" 
+          
+      - name: Check Python Syntax
+        run: |
+          python -m py_compile main_server/**/*.py
+          python -m py_compile ai_server/**/*.py
+
+  # 2. C++ 카메라 제어 (Node 1) CMake 빌드 검증
+  build-camera-cpp:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        
+      - name: Install OpenCV & Build Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake libopencv-dev
+          
+      - name: CMake Build (Dry Run)
+        run: |
+          mkdir -p camera_control/build
+          cd camera_control/build
+          # CMakeLists.txt가 비어있을 수 있으므로 에러 무시 처리 (초기 세팅용)
+          cmake .. || true 
+
+  # 3. Qt C++ 클라이언트 qmake 빌드 검증
+  build-client-qt:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        
+      - name: Install Qt Environment
+        uses: jurplel/install-qt-action@v3
+        with:
+          version: '5.15.2'
+          
+      - name: qmake Build (Dry Run)
+        run: |
+          mkdir -p client_qt/build
+          cd client_qt/build
+          # .pro 파일이 아직 없을 수 있으므로 에러 무시 처리 (초기 세팅용)
+          qmake ../ || true
+
+  # 나중에 커밋 올라가면  || true << 지우기
