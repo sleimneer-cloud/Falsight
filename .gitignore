@@ -1,4 +1,4 @@
-# Python (Node 2, Node 3)
+# Python
 __pycache__/
 *.py[cod]
 *$py.class
@@ -7,23 +7,32 @@ venv/
 *.sqlite3
 *.db
 
-# C++ & CMake (Node 1)
+# C++ & CMake
 build/
 CMakeCache.txt
 CMakeFiles/
 *.o
 *.out
+*.exe
+*.dll
+*.so
 
-# Qt C++ (Client)
+# Qt / Build outputs
 *.pro.user
 *.moc
 *.obj
 *.rcc
-*.exe
 Makefile
+Debug/
+Release/
 
 # OS & IDE
 .DS_Store
 .vs/
 .vscode/
 .idea/
+
+# Misc
+*.log
+*.tmp
+*.cache
