@@ -6,7 +6,7 @@ on:
     branches: [ "develop" ]
 
 jobs:
-  # 1. Python 서버 (Node 3 메인 서버 & Node 2 AI 서버) 문법 검증
+ # 1. Python 서버 (Node 3 메인 서버 & Node 2 AI 서버) 문법 검증
   build-python:
     runs-on: ubuntu-latest
     steps:
@@ -20,8 +20,9 @@ jobs:
           
       - name: Check Python Syntax
         run: |
-          python -m py_compile main_server/**/*.py
-          python -m py_compile ai_server/**/*.py
+          # compileall은 폴더 내의 모든 .py 파일을 찾아 문법 검사를 수행합니다.
+          # -f 옵션은 강제 빌드, -q는 에러만 출력하는 옵션입니다.
+          python -m compileall main_server/ ai_server/ -f -q
 
   # 2. C++ 카메라 제어 (Node 1) CMake 빌드 검증
   build-camera-cpp:
