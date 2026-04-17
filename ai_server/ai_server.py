@@ -96,8 +96,13 @@ def zmq_receiver(frame_queues: dict):
 
     while True:
         try:
-            message = socket.recv()
-
+            parts = socket.recv_multipart()
+            if len(parts) == 1:
+                message = parts[0]  # 단일 메시지
+            elif len(parts) == 2:
+                message = parts[0] + parts[1]  # 헤더 + 페이로드 합치기
+            else:
+                continue
             # ── 검증 1단계: 최소 크기 ────────────────────────
             if len(message) < 20:
                 log.warning("[ZMQ] 메시지 너무 짧음 → 스킵")
@@ -106,9 +111,9 @@ def zmq_receiver(frame_queues: dict):
             # ── 헤더 파싱 (20바이트) ─────────────────────────
             camera_id = message[0]                                # 1B: 0~3
             # padding = message[1:4]                              # 3B: 무시
-            timestamp = struct.unpack_from(">Q", message, 4)[0]  # 8B
-            frame_id  = struct.unpack_from(">I", message, 12)[0] # 4B
-            jpeg_size = struct.unpack_from(">I", message, 16)[0] # 4B
+            timestamp = struct.unpack_from("<Q", message, 4)[0]  # 8B
+            frame_id  = struct.unpack_from("<I", message, 12)[0] # 4B
+            jpeg_size = struct.unpack_from("<I", message, 16)[0] # 4B
 
             # ── 검증 2단계: 페이로드 크기 일치 ──────────────
             payload = message[20:]
@@ -191,7 +196,7 @@ def main():
     # ③ 수신 프로세스
     # C++ 연동 전: USE_DUMMY = True  (더미 프레임으로 테스트)
     # C++ 연동 후: USE_DUMMY = False (ZMQ 실제 수신)
-    USE_DUMMY = True
+    USE_DUMMY = False
 
     receiver_target = dummy_receiver if USE_DUMMY else zmq_receiver
     receiver_name   = "DummyReceiver" if USE_DUMMY else "ZMQReceiver"

@@ -42,8 +42,9 @@ print("=" * 55)
 print("\n[1] config.py 로드")
 try:
     import config
-    check("MODEL_VERSION 설정",   config.MODEL_VERSION in [1, 2],     str(config.MODEL_VERSION))
+    # ✅ 수정: MODEL_VERSION 제거됨 → N_FEATURES/USE_MEDIAPIPE 직접 확인
     check("N_FEATURES 설정",      config.N_FEATURES in [99, 34],      str(config.N_FEATURES))
+    check("USE_MEDIAPIPE 설정",   isinstance(config.USE_MEDIAPIPE, bool), str(config.USE_MEDIAPIPE))
     check("FRAME_WINDOW 설정",    config.FRAME_WINDOW == 100,         str(config.FRAME_WINDOW))
     check("FALL_THRESHOLD 설정",  0 < config.FALL_THRESHOLD <= 1,     str(config.FALL_THRESHOLD))
     check("CAMERA_IDS 설정",      len(config.CAMERA_IDS) == 4,        str(config.CAMERA_IDS))
@@ -90,37 +91,57 @@ except Exception as e:
 
 
 # ── ③ FallDetector ───────────────────────────────────────────
-print("\n[3] FallDetector - CNN 추론 및 판정")
+print("\n[3] FallDetector - LSTM 추론 및 판정")
 try:
     from modules.fall_detector import FallDetector, RESULT_FALL, RESULT_UNCERTAIN, RESULT_NON_FALL
 
     det = FallDetector()
     check("FallDetector 초기화", True, "더미 모드" if det.model is None else "실제 모델")
 
-    # 더미 모드 추론 100회 테스트
+    # 실제 모델로 추론 테스트
     buf = np.random.rand(config.FRAME_WINDOW, config.N_FEATURES).astype(np.float32)
-    labels = set()
-    for _ in range(100):
-        r = det.predict(buf)
-        if r:
-            labels.add(r["label"])
+    r = det.predict(buf)
 
-    check("predict() 반환값 존재",    r is not None,       str(r))
+    check("predict() 반환값 존재",    r is not None,             str(r))
     check("confidence 범위 (0~1)",    0 <= r["confidence"] <= 1, f"{r['confidence']:.3f}")
     check("label 값 유효성",
           r["label"] in [RESULT_FALL, RESULT_UNCERTAIN, RESULT_NON_FALL],
           r["label"])
-    check("FALL/UNCERTAIN/NON_FALL 모두 발생 (100회)",
-          len(labels) >= 2, f"발생한 label: {labels}")
+
+    # ✅ 수정: 실제 모델은 랜덤 입력 → 대부분 NON_FALL
+    #          더미 모드일 때만 다양한 label 기대
+    if det.model is None:
+        labels = set()
+        for _ in range(100):
+            res = det.predict(buf)
+            if res:
+                labels.add(res["label"])
+        check("FALL/UNCERTAIN/NON_FALL 모두 발생 (100회, 더미모드)",
+              len(labels) >= 2, f"발생한 label: {labels}")
+    else:
+        check("실제 모델 추론 정상 동작",
+              r is not None, f"label={r['label']}, confidence={r['confidence']:.3f}")
 
     # 잘못된 shape 입력 시 None 반환 확인
     bad_buf = np.zeros((50, 10), dtype=np.float32)
     check("잘못된 shape → None 반환", det.predict(bad_buf) is None, "shape 검증")
 
-    # 임계값 분류 로직 확인
-    check("FALL 분류",      det._classify(0.95) == RESULT_FALL,      f"0.95 → {det._classify(0.95)}")
-    check("UNCERTAIN 분류", det._classify(0.70) == RESULT_UNCERTAIN,  f"0.70 → {det._classify(0.70)}")
-    check("NON_FALL 분류",  det._classify(0.30) == RESULT_NON_FALL,   f"0.30 → {det._classify(0.30)}")
+    # 임계값 분류 로직 확인 (config.FALL_THRESHOLD 기준)
+    # FALL_THRESHOLD = 0.70, UNCERTAIN_MIN = 0.60
+    check("FALL 분류",
+          det._classify(0.95) == RESULT_FALL,
+          f"0.95 → {det._classify(0.95)}")
+    # ✅ 수정: 0.70은 FALL_THRESHOLD(0.70) 이상이므로 FALL
+    check("FALL 경계값 분류",
+          det._classify(0.70) == RESULT_FALL,
+          f"0.70 → {det._classify(0.70)}")
+    # UNCERTAIN 범위: 0.60 이상 0.70 미만
+    check("UNCERTAIN 분류",
+          det._classify(0.65) == RESULT_UNCERTAIN,
+          f"0.65 → {det._classify(0.65)}")
+    check("NON_FALL 분류",
+          det._classify(0.30) == RESULT_NON_FALL,
+          f"0.30 → {det._classify(0.30)}")
 
 except Exception as e:
     check("FallDetector", False, str(e))
@@ -203,7 +224,7 @@ try:
         camera_id=2,
         track_id=2,
         buffer=buf,
-        confidence=0.72
+        confidence=0.65
     )
     after = len(os.listdir(config.SAVE_DIR_UNCERTAIN))
     check("UNCERTAIN CSV 저장", after > before, f"파일 {after - before}개 생성")
@@ -229,7 +250,6 @@ try:
 
     sender = AlarmSender()
 
-    # 첫 전송 시도 (Node3 없어서 실패해도 쿨다운은 작동 안 함)
     check("AlarmSender 초기화", True, "")
     check("초기 쿨다운 없음", not sender._is_cooldown(1), "cam1 쿨다운 없음")
 
@@ -268,27 +288,23 @@ try:
 
     # 150프레임 더미 처리
     for frame_num in range(150):
-        # 더미 감지 (사람 1명)
         fake_detection = [{
             "bbox":      (50, 50, 200, 400),
             "keypoints": np.random.rand(config.N_FEATURES).astype(np.float32)
         }]
 
-        # 추적
         tracks = tracker.update(fake_detection)
 
         for track in tracks:
             track_id  = track["track_id"]
             keypoints = track["keypoints"]
 
-            # 버퍼 누적
             buffer = buffer_mgr.update(track_id, keypoints)
             if buffer is None:
                 continue
 
             infer_count += 1
 
-            # 추론
             result = detector.predict(buffer)
             if result is None:
                 continue
@@ -296,7 +312,6 @@ try:
             label      = result["label"]
             confidence = result["confidence"]
 
-            # 저장 (FALL/UNCERTAIN)
             if label in [RESULT_FALL, RESULT_UNCERTAIN]:
                 saver.save(
                     label=label,

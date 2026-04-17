@@ -1,25 +1,9 @@
-"""
-modules/alarm_process.py
-========================
-알람 프로세스
-
-역할:
-    Result Queue에서 FALL 결과 수신
-    → AlarmSender로 Node 3에 HTTP POST 전송
-    → 쿨다운 관리 (동일 카메라 중복 알람 방지)
-"""
 
 import logging
 import multiprocessing as mp
 
 
 def alarm_process(result_queue: mp.Queue):
-    """
-    알람 프로세스 진입점
-
-    입력:
-        result_queue: 워커 프로세스로부터 FALL 결과 수신
-    """
     from modules.alarm_sender import AlarmSender
 
     logging.basicConfig(level=logging.INFO)
@@ -38,16 +22,19 @@ def alarm_process(result_queue: mp.Queue):
                 break
 
             camera_id  = result["camera_id"]
+            track_id = result["track_id"]
             confidence = result["confidence"]
+            timestamp = result["timestamp"]
 
             log.info(
                 f"[Alarm] FALL 수신 → 전송 시도 "
-                f"(cam={camera_id}, conf={confidence:.3f})"
+                f"(cam={camera_id}, track={track_id}, conf={confidence:.3f})"
             )
 
             sender.send(
                 camera_id=camera_id,
-                confidence=confidence
+                confidence=confidence,
+                timestamp=timestamp
             )
 
         except mp.queues.Empty:

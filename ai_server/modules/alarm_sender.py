@@ -34,14 +34,15 @@ class AlarmSender:
 
     사용 예시:
         sender = AlarmSender()
-        sender.send(camera_id=2, track_id=3, confidence=0.94)
+s       ender.send(camera_id=2, confidence=0.94, timestamp=1713340120000)
     """
 
     def __init__(self):
         # 쿨다운 관리: {camera_id: last_sent_timestamp}
         self._last_sent: dict[int, float] = {}
 
-    def send(self, camera_id: int, track_id: int, confidence: float) -> bool:
+    def send(self, camera_id: int, confidence: float, timestamp: int) -> bool:
+
         """
         Node 3으로 낙상 알람 전송
 
@@ -59,9 +60,9 @@ class AlarmSender:
             return False
 
         payload = {
-            "event":      "fall_detected",
-            "camera_id":  camera_id,
-            "timestamp":  datetime.now(timezone.utc).isoformat(),
+            "event": "fall_detected",
+            "camera_id": camera_id,
+            "timestamp": timestamp,
             "confidence": round(confidence, 4),
         }
 
@@ -71,12 +72,12 @@ class AlarmSender:
             self._last_sent[camera_id] = time.time()
             logger.info(
                 f"[Alarm] 전송 성공 → Node 3 "
-                f"(cam={camera_id}, track={track_id}, conf={confidence:.3f})"
+                f"(cam={camera_id}, conf={confidence:.3f})"
             )
         else:
             logger.error(
                 f"[Alarm] 전송 실패 "
-                f"(cam={camera_id}, track={track_id}, conf={confidence:.3f})"
+                f"(cam={camera_id}, conf={confidence:.3f})"
             )
 
         return success
