@@ -3,22 +3,28 @@
  * @file HttpServer.h
  * @brief Main Server 명령 수신 및 클립 업로드 담당
  *
- * 설계 원칙:
- * - cpp-httplib 사용 (헤더 온리 라이브러리)
- * - 비동기 클립 추출 (캡처 스레드 영향 없음)
- * - RESTful API 구조
+ * 클립 추출 방식:
+ * - fall_time 기준으로 앞 half_duration, 뒤 half_duration 추출
+ * - 파일 경계 걸리면 이전 파일과 concat 후 추출
+ * - fMP4 포맷 출력 (쓰는 중에도 읽기 가능, 스트리밍 호환)
  *
  * API 규격:
  * [수신] POST /api/edge/record
- *   요청: { "fall_id": 104, "cam_id": 2, "duration": 15 }
+ *   요청: {
+ *     "fall_id"  : 104,
+ *     "cam_id"   : 2,
+ *     "duration" : 240,            ← 총 클립 길이 (초), 기본 4분
+ *     "fall_time": 1734567890000   ← 낙상 발생 시간 (Unix ms)
+ *   }
  *   응답: { "status": "success", "message": "recording started", "fall_id": 104 }
  *
  * [송신] POST http://{MainServer}/video/upload (multipart/form-data)
- *   전송: video_file + metadata JSON
+ *   전송: video_file(fMP4) + metadata JSON
  */
 
 #ifndef HTTP_SERVER_H
 #define HTTP_SERVER_H
+
 #include "PacketHeader.h"
 #include <string>
 #include <thread>
@@ -33,205 +39,154 @@
   * @brief 클립 추출 요청 데이터
   */
 struct ClipRequest {
-    int fall_id;           // 낙상 이벤트 ID
-    int camera_id;         // 카메라 번호
-    int duration;          // 클립 길이 (초)
-    int64_t request_time;  // 요청 시간 (Unix ms)
+    int     fall_id;          // 낙상 이벤트 ID
+    int     camera_id;        // 카메라 번호
+    int     duration;         // 총 클립 길이 (초), 기본 240 = 4분
+    int64_t request_time;     // 요청 수신 시간 (Unix ms)
+    int64_t fall_time;        // ★ 낙상 발생 시간 (Unix ms) - 클립 기준점
 };
 
 /**
  * @class HttpServer
  * @brief Main Server와의 HTTP 통신 담당
- *
- * 사용 예시:
- * @code
- *   HttpServer server(8080, "D:/recordings", "192.168.0.100");
- *   server.set_camera_status_callback([](int cam_id) { return true; });
- *   server.start();
- *   // ...
- *   server.stop();
- * @endcode
  */
 class HttpServer {
 public:
-    // 카메라 상태 확인 콜백 타입
     using CameraStatusCallback = std::function<bool(int camera_id)>;
 
     //--------------------------------------------------------------------------
     // 생성자 / 소멸자
     //--------------------------------------------------------------------------
-
-    /**
-     * @brief HttpServer 생성자
-     * @param port 서버 포트 (기본값: 8080)
-     * @param storage_path 녹화 파일 저장 경로
-     * @param main_server_ip Main Server IP (업로드용)
-     * @param main_server_port Main Server 포트 (기본값: 80)
-     */
     HttpServer(uint16_t port,
         const std::string& storage_path,
         const std::string& main_server_ip,
         uint16_t main_server_port = 80);
 
-    /**
-     * @brief 소멸자
-     */
     ~HttpServer();
 
-    // 복사 금지
     HttpServer(const HttpServer&) = delete;
     HttpServer& operator=(const HttpServer&) = delete;
 
     //--------------------------------------------------------------------------
     // 공개 인터페이스
     //--------------------------------------------------------------------------
-
-    /**
-     * @brief 서버 시작
-     * @return true: 시작 성공
-     */
     bool start();
-
-    /**
-     * @brief 서버 중지
-     */
     void stop();
-
-    /**
-     * @brief 실행 상태 확인
-     */
     bool is_running() const { return running_.load(); }
-
-    /**
-     * @brief 카메라 상태 확인 콜백 설정
-     * @param callback 카메라 ID를 받아 연결 상태를 반환하는 함수
-     */
     void set_camera_status_callback(CameraStatusCallback callback);
 
-    //--------------------------------------------------------------------------
-    // 통계 조회
-    //--------------------------------------------------------------------------
-
-    /**
-     * @brief 처리한 요청 수
-     */
-    uint64_t get_request_count() const { return request_count_.load(); }
-
-    /**
-     * @brief 업로드 성공 수
-     */
-    uint64_t get_upload_count() const { return upload_count_.load(); }
-
-    /**
-     * @brief 업로드 실패 수
-     */
+    uint64_t get_request_count()     const { return request_count_.load(); }
+    uint64_t get_upload_count()      const { return upload_count_.load(); }
     uint64_t get_upload_fail_count() const { return upload_fail_count_.load(); }
 
 private:
     //--------------------------------------------------------------------------
-    // 내부 메서드 - 서버
+    // 서버 / 워커
     //--------------------------------------------------------------------------
-
-    /**
-     * @brief HTTP 서버 스레드 메인
-     */
     void server_thread_func();
-
-    /**
-     * @brief 라우트 설정
-     */
-    void setup_routes();
-
-    //--------------------------------------------------------------------------
-    // 내부 메서드 - 클립 추출
-    //--------------------------------------------------------------------------
-
-    /**
-     * @brief 클립 추출 워커 스레드
-     */
     void clip_worker_func();
-
-    /**
-     * @brief 클립 추출 요청 추가
-     */
     void enqueue_clip_request(const ClipRequest& request);
 
+    //--------------------------------------------------------------------------
+    // 클립 추출
+    //--------------------------------------------------------------------------
+
     /**
-     * @brief 실제 클립 추출 (ffmpeg 호출)
-     * @param request 클립 요청 정보
-     * @return 추출된 파일 경로 (실패 시 빈 문자열)
+     * @brief 클립 추출 메인
+     *        fall_time 기준 앞뒤 half_duration 추출
+     *        파일 경계 시 두 파일 concat 후 추출
      */
     std::string extract_clip(const ClipRequest& request);
 
     /**
-     * @brief Main Server로 클립 업로드
-     * @param filepath 업로드할 파일 경로
-     * @param request 원본 요청 정보 (메타데이터용)
-     * @return true: 업로드 성공
+     * @brief 단일 파일에서 클립 추출 (fMP4)
+     * @param source     원본 파일 경로
+     * @param seek_sec   파일 내 시작 위치 (초)
+     * @param duration   추출 길이 (초)
+     * @param output     출력 파일 경로
      */
-    bool upload_clip(const std::string& filepath, const ClipRequest& request);
-
-    //--------------------------------------------------------------------------
-    // 내부 메서드 - 유틸리티
-    //--------------------------------------------------------------------------
+    std::string extract_single_file(const std::string& source,
+        int seek_sec,
+        int duration,
+        const std::string& output);
 
     /**
-     * @brief 녹화 파일 경로 찾기
-     * @param camera_id 카메라 번호
-     * @param timestamp 기준 시간
-     * @return 파일 경로 (없으면 빈 문자열)
+     * @brief 두 파일 concat 후 클립 추출 (파일 경계 처리, fMP4)
+     * @param file1      이전 시간 파일 (예: 14시.mp4)
+     * @param file2      현재 시간 파일 (예: 15시.mp4)
+     * @param seek_sec   file1 기준 시작 위치 (초)
+     * @param duration   추출 길이 (초)
+     * @param output     출력 파일 경로
+     * @param temp_dir   임시 파일 저장 디렉토리
+     */
+    std::string extract_two_files(const std::string& file1,
+        const std::string& file2,
+        int seek_sec,
+        int duration,
+        const std::string& output,
+        const std::string& temp_dir);
+
+    /**
+     * @brief 파일명(YYYYMMDD_HH.mp4) 기준으로 seek 위치 계산
+     * @param filepath       파일 전체 경로
+     * @param fall_time      낙상 발생 시간 (Unix ms)
+     * @param half_duration  클립 절반 길이 (초)
+     * @return seek 초 (음수 = 이전 파일에 걸침)
+     */
+    int calculate_seek_seconds(const std::string& filepath,
+        int64_t fall_time,
+        int half_duration) const;
+
+    /**
+     * @brief 이전 시간대 파일 찾기 (fall_time 기준 1시간 전)
+     */
+    std::string find_prev_recording_file(int camera_id, int64_t fall_time) const;
+
+    /**
+     * @brief 해당 시간대 파일 찾기
      */
     std::string find_recording_file(int camera_id, int64_t timestamp);
 
-    /**
-     * @brief 로그 출력
-     */
+    //--------------------------------------------------------------------------
+    // 업로드
+    //--------------------------------------------------------------------------
+    bool upload_clip(const std::string& filepath, const ClipRequest& request);
+
+    //--------------------------------------------------------------------------
+    // 유틸리티
+    //--------------------------------------------------------------------------
     void log(const std::string& level, const std::string& message) const;
-
-    /**
-     * @brief 현재 시간을 ISO 문자열로
-     */
     static std::string get_iso_timestamp();
-
-    /**
-     * @brief 현재 시간을 밀리초로
-     */
     static int64_t now_ms();
 
     //--------------------------------------------------------------------------
     // 멤버 변수
     //--------------------------------------------------------------------------
+    uint16_t    port_;
+    std::string storage_path_;
+    std::string main_server_ip_;
+    uint16_t    main_server_port_;
 
-    // 서버 설정
-    uint16_t port_;                              // 서버 포트
-    std::string storage_path_;                   // 녹화 파일 경로
-    std::string main_server_ip_;                 // Main Server IP
-    uint16_t main_server_port_;                  // Main Server 포트
+    std::thread server_thread_;
+    std::thread clip_worker_thread_;
+    std::atomic<bool> running_{ false };
 
-    // 스레드
-    std::thread server_thread_;                  // HTTP 서버 스레드
-    std::thread clip_worker_thread_;             // 클립 추출 워커
-    std::atomic<bool> running_{ false };           // 실행 상태
+    std::queue<ClipRequest> clip_queue_;
+    std::mutex              clip_mutex_;
+    std::condition_variable clip_cond_;
 
-    // 클립 요청 큐
-    std::queue<ClipRequest> clip_queue_;         // 요청 큐
-    std::mutex clip_mutex_;                      // 큐 뮤텍스
-    std::condition_variable clip_cond_;          // 큐 조건변수
+    CameraStatusCallback camera_status_callback_;
 
-    // 콜백
-    CameraStatusCallback camera_status_callback_; // 카메라 상태 확인
-
-    // 통계
-    std::atomic<uint64_t> request_count_{ 0 };     // 요청 수
-    std::atomic<uint64_t> upload_count_{ 0 };      // 업로드 성공
-    std::atomic<uint64_t> upload_fail_count_{ 0 }; // 업로드 실패
+    std::atomic<uint64_t> request_count_{ 0 };
+    std::atomic<uint64_t> upload_count_{ 0 };
+    std::atomic<uint64_t> upload_fail_count_{ 0 };
 
     //--------------------------------------------------------------------------
     // 상수
     //--------------------------------------------------------------------------
-    static constexpr int CLIP_MARGIN_SECONDS = 5;    // 클립 전후 여유 시간
-    static constexpr int MAX_CLIP_DURATION = 60;     // 최대 클립 길이
-    static constexpr int UPLOAD_TIMEOUT_SEC = 30;    // 업로드 타임아웃
+    static constexpr int DEFAULT_CLIP_DURATION = 240;  // 기본 4분
+    static constexpr int MAX_CLIP_DURATION = 600;  // 최대 10분
+    static constexpr int UPLOAD_TIMEOUT_SEC = 60;   // 업로드 타임아웃 (4분 영상이라 여유)
 };
 
 #endif // HTTP_SERVER_H
