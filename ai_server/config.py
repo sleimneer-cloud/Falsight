@@ -8,7 +8,7 @@ Falsight AI 서버 전체 설정값 중앙 관리
 """
 
 # ── 모델 설정
-MODEL_PATH    = "models/fallvision_best_model_v3.pt"
+MODEL_PATH    = "models/fallvision_best_model_v9.pt"
 N_FEATURES    = 34        # COCO 17관절 × (x, y) = 34피처
 USE_MEDIAPIPE = False     # YOLO11 Pose 사용
 
@@ -16,12 +16,12 @@ USE_MEDIAPIPE = False     # YOLO11 Pose 사용
 USE_GPU = False   # CPU: False / GPU(RTX 3060): True
 
 # ── 입력 shape
-FRAME_WINDOW  = 100     # 슬라이딩 윈도우 프레임 수
+FRAME_WINDOW  = 50     # 슬라이딩 윈도우 프레임 수
 
 # ── 판정 임계값
-FALL_THRESHOLD      = 0.80   # 이 값 이상이면 FALL
+FALL_THRESHOLD      = 0.70   # 이 값 이상이면 FALL
 UNCERTAIN_MIN       = 0.60   # UNCERTAIN 구간 하한
-UNCERTAIN_MAX       = 0.80   # UNCERTAIN 구간 상한
+UNCERTAIN_MAX       = 0.70   # UNCERTAIN 구간 상한
 
 
 # ── 카메라 설정 ─
@@ -43,7 +43,7 @@ ZMQ_HOST = "0.0.0.0"
 ZMQ_PORT = 9001
 
 # ── Node 3 (메인 서버) HTTP POST
-NODE3_HOST          = "10.10.10.103"
+NODE3_HOST          = "10.10.10.113"
 NODE3_PORT          = 8000
 NODE3_FALL_ENDPOINT = f"http://{NODE3_HOST}:{NODE3_PORT}/api/fall-event"
 NODE3_RETRY_COUNT   = 3        # 전송 실패 시 재시도 횟수

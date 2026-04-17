@@ -24,6 +24,7 @@ from config import (
     NODE3_RETRY_COUNT,
     ALARM_COOLDOWN_SEC
 )
+from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +63,10 @@ s       ender.send(camera_id=2, confidence=0.94, timestamp=1713340120000)
         payload = {
             "event": "fall_detected",
             "camera_id": camera_id,
-            "timestamp": timestamp,
+            "timestamp": datetime.fromtimestamp(
+                timestamp / 1000,
+                tz=timezone.utc
+            ).isoformat(),  # int → str 변환
             "confidence": round(confidence, 4),
         }
 

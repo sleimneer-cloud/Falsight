@@ -5,6 +5,10 @@ YOLO11 Pose 기반 Keypoint 추출 모듈
 
 추출 방식: YOLO11 Pose 단일 forward pass
 관절 수:   COCO 17관절 × (x, y) = 34피처
+
+전신 필터:
+    하체(엉덩이~발목) confidence 평균 < 0.3 → 스킵
+    전신이 보이지 않는 경우 오탐 방지
 """
 
 import cv2
@@ -14,18 +18,42 @@ from config import N_FEATURES, AI_RESOLUTION
 
 logger = logging.getLogger(__name__)
 
-# COCO 17관절 순서 (모델 keypoint_order와 동일)
+# COCO 17관절 순서
 COCO_KEYPOINTS = [
-    'Nose', 'Left Eye', 'Right Eye', 'Left Ear', 'Right Ear',
-    'Left Shoulder', 'Right Shoulder', 'Left Elbow', 'Right Elbow',
-    'Left Wrist', 'Right Wrist', 'Left Hip', 'Right Hip',
-    'Left Knee', 'Right Knee', 'Left Ankle', 'Right Ankle'
+    'Nose',           # 0
+    'Left Eye',       # 1
+    'Right Eye',      # 2
+    'Left Ear',       # 3
+    'Right Ear',      # 4
+    'Left Shoulder',  # 5
+    'Right Shoulder', # 6
+    'Left Elbow',     # 7
+    'Right Elbow',    # 8
+    'Left Wrist',     # 9
+    'Right Wrist',    # 10
+    'Left Hip',       # 11
+    'Right Hip',      # 12
+    'Left Knee',      # 13
+    'Right Knee',     # 14
+    'Left Ankle',     # 15
+    'Right Ankle'     # 16
 ]
+
+# 하체 관절 인덱스 (엉덩이 ~ 발목)
+LOWER_BODY_IDX = [11, 12, 13, 14, 15, 16]
+
+# 하체 감지 최소 confidence
+LOWER_BODY_CONF_THRESHOLD = 0.3
 
 
 class KeypointExtractor:
     """
     YOLO11 Pose로 사람 감지 + 17관절 동시 추출
+
+    전신 필터 적용:
+        하체 관절(엉덩이~발목) confidence 평균이
+        LOWER_BODY_CONF_THRESHOLD 미만이면 스킵
+        → CCTV 사각지대 / 부분 가시성 오탐 방지
 
     사용 예시:
         extractor = KeypointExtractor()
@@ -49,7 +77,7 @@ class KeypointExtractor:
 
     def extract(self, frame: np.ndarray) -> list:
         """
-        프레임에서 사람별 Keypoint 추출
+        프레임에서 전신이 보이는 사람만 Keypoint 추출
 
         입력:
             frame: BGR 이미지 (np.ndarray)
@@ -58,19 +86,18 @@ class KeypointExtractor:
             list of dict: [
                 {
                     "track_id": int,
-                    "keypoints": np.ndarray (34,),  ← 17관절 × x,y 정규화
-                    "bbox": (x1, y1, x2, y2)
+                    "keypoints": np.ndarray (34,),
+                    "bbox":      (x1, y1, x2, y2)
                 },
                 ...
             ]
-            사람 없거나 모델 없으면 빈 리스트 반환
+            전신 미감지 또는 모델 없으면 빈 리스트 반환
         """
         if self.yolo is None:
             return []
 
         # 해상도 조절
         frame = cv2.resize(frame, AI_RESOLUTION)
-        h, w = frame.shape[:2]
 
         results = []
         try:
@@ -79,16 +106,24 @@ class KeypointExtractor:
             if detections.keypoints is None:
                 return []
 
-            keypoints_data = detections.keypoints.xy.cpu().numpy()  # (N, 17, 2)
+            keypoints_data = detections.keypoints.xy.cpu().numpy()    # (N, 17, 2)
+            keypoints_conf = detections.keypoints.conf.cpu().numpy()  # (N, 17)
             boxes          = detections.boxes
 
             for i, kp_17 in enumerate(keypoints_data):
-                # 17관절 × 2축 = 34피처
-                kp = kp_17.flatten().astype(np.float32)  # (34,)
 
-                # 좌표 정규화 (0~1)
-                kp[0::2] /= w   # X 정규화
-                kp[1::2] /= h   # Y 정규화
+                # ── 전신 필터: 하체 confidence 체크 ─────────────
+                lower_conf = keypoints_conf[i][LOWER_BODY_IDX].mean()
+                if lower_conf < LOWER_BODY_CONF_THRESHOLD:
+                    logger.debug(
+                        f"[Extractor] 전신 미감지 → 스킵 "
+                        f"(lower_conf={lower_conf:.2f} < {LOWER_BODY_CONF_THRESHOLD})"
+                    )
+                    continue
+
+                # ── Keypoint 추출 (픽셀 좌표 그대로) ────────────
+                # Scaler가 픽셀 좌표 기준으로 학습됨 → 정규화 안 함
+                kp = kp_17.flatten().astype(np.float32)  # (34,)
 
                 # bbox 추출
                 bbox = (0, 0, 0, 0)

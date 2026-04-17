@@ -8,14 +8,18 @@ PyTorch LSTM 추론 및 낙상 판정 모듈
     hidden_size : 128
     num_layers  : 2
     dropout     : 0.3
-    threshold   : 0.5 (모델 내장값 사용)
+
+전처리:
+    StandardScaler (fallvision_scaler_v3.pkl) 적용 필수
+    미적용 시 오탐 폭발
 
 판정 결과:
     FALL      : confidence >= FALL_THRESHOLD
-    UNCERTAIN : UNCERTAIN_MIN <= confidence < UNCERTAIN_MAX
+    UNCERTAIN : UNCERTAIN_MIN <= confidence < FALL_THRESHOLD
     NON_FALL  : confidence < UNCERTAIN_MIN
 """
 
+import pickle
 import numpy as np
 import logging
 import time
@@ -35,6 +39,9 @@ RESULT_FALL      = "FALL"
 RESULT_UNCERTAIN = "UNCERTAIN"
 RESULT_NON_FALL  = "NON_FALL"
 
+# Scaler 경로 (모델과 같은 폴더)
+SCALER_PATH = "models/fallvision_scaler_v9.pkl"
+
 
 # ── LSTM 모델 정의 ────────────────────────────────────────────
 class FallLSTM(nn.Module):
@@ -51,7 +58,7 @@ class FallLSTM(nn.Module):
             batch_first = True,
             dropout     = dropout if num_layers > 1 else 0.0
         )
-        self.fc = nn.Linear(hidden_size, 1)
+        self.fc      = nn.Linear(hidden_size, 1)
         self.sigmoid = nn.Sigmoid()
 
     def forward(self, x):
@@ -74,25 +81,28 @@ class FallDetector:
 
     def __init__(self):
         self.model     = None
-        self.device    = torch.device("cuda" if USE_GPU and torch.cuda.is_available() else "cpu")
-        self.threshold = FALL_THRESHOLD   # config 기본값, 모델 내장값으로 덮어씀
+        self.scaler    = None
+        self.device    = torch.device(
+            "cuda" if USE_GPU and torch.cuda.is_available() else "cpu"
+        )
+        self.threshold = FALL_THRESHOLD
         self._load_model()
+        self._load_scaler()
+
+    # ── 모델 로드 ─────────────────────────────────────────────
 
     def _load_model(self):
         """PyTorch LSTM 모델 로드"""
         try:
             checkpoint = torch.load(MODEL_PATH, map_location=self.device)
 
-            # 모델 구조 파라미터 추출
             input_size  = checkpoint["input_size"]
             hidden_size = checkpoint["hidden_size"]
             num_layers  = checkpoint["num_layers"]
             dropout     = checkpoint["dropout"]
 
-            # 모델 내장 threshold 사용 (config 값 덮어씀)
-            self.threshold = FALL_THRESHOLD
+            self.threshold = FALL_THRESHOLD   # config 값 사용
 
-            # 모델 생성 및 가중치 로드
             self.model = FallLSTM(input_size, hidden_size, num_layers, dropout)
             self.model.load_state_dict(checkpoint["model_state_dict"])
             self.model.to(self.device)
@@ -114,13 +124,32 @@ class FallDetector:
             logger.error(f"[Detector] 모델 로드 실패: {e}")
             raise RuntimeError(f"모델 로드 실패 — 서버 기동 중단: {e}")
 
+    # ── Scaler 로드 ───────────────────────────────────────────
+
+    def _load_scaler(self):
+        """StandardScaler 로드 (학습 시 사용한 것과 동일)"""
+        try:
+            with open(SCALER_PATH, "rb") as f:
+                self.scaler = pickle.load(f)
+            logger.info(f"[Detector] Scaler 로드 완료: {SCALER_PATH}")
+        except FileNotFoundError:
+            logger.warning(
+                f"[Detector] Scaler 파일 없음: {SCALER_PATH} "
+                f"→ 정규화 없이 추론 (오탐 가능성 있음)"
+            )
+            self.scaler = None
+        except Exception as e:
+            logger.error(f"[Detector] Scaler 로드 실패: {e}")
+            self.scaler = None
+
+    # ── 추론 ──────────────────────────────────────────────────
+
     def predict(self, buffer: np.ndarray) -> dict | None:
         """
         100프레임 버퍼로 낙상 판정
 
         입력:
-            buffer: shape (FRAME_WINDOW, N_FEATURES)
-                    = (100, 34)
+            buffer: shape (FRAME_WINDOW, N_FEATURES) = (100, 34)
 
         반환:
             {
@@ -145,17 +174,25 @@ class FallDetector:
                 logger.debug("[Detector] 더미 모드 추론")
 
             else:
-                # PyTorch LSTM 추론
+                # ── Scaler 적용 ──────────────────────────────
+                if self.scaler is not None:
+                    buffer_scaled = self.scaler.transform(
+                        buffer.reshape(-1, N_FEATURES)
+                    ).reshape(FRAME_WINDOW, N_FEATURES)
+                else:
+                    buffer_scaled = buffer
+
+                # ── PyTorch LSTM 추론 ─────────────────────────
                 tensor = torch.tensor(
-                    buffer[np.newaxis, ...],   # (1, 100, 34)
+                    buffer_scaled[np.newaxis, ...],   # (1, 100, 34)
                     dtype=torch.float32
                 ).to(self.device)
 
                 with torch.no_grad():
-                    output = self.model(tensor)   # (1, 1)
+                    output = self.model(tensor)        # (1, 1)
                     confidence = float(output[0][0].cpu())
 
-            # 타임아웃 체크
+            # ── 타임아웃 체크 ─────────────────────────────────
             elapsed_ms = (time.time() - start) * 1000
             if elapsed_ms > INFERENCE_TIMEOUT_MS:
                 logger.warning(
@@ -164,7 +201,7 @@ class FallDetector:
                 )
                 return None
 
-            # 판정
+            # ── 판정 ──────────────────────────────────────────
             label = self._classify(confidence)
 
             logger.debug(
