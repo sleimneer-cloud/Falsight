@@ -19,29 +19,57 @@ void ZmqReceiverWorker::startReceiving() {
     zmq::context_t context(1);
     zmq::socket_t socket(context, ZMQ_SUB);
 
-    socket.connect(m_dataEndpoint.toStdString()); // 9002번 포트
-    socket.set(zmq::sockopt::subscribe, ""); // 모든 cam 토픽 수신
+    // 1. 연결 시도 로그
+    QString startMsg = QString("[Data] VCR 스트리밍 서버 연결 시도 중... -> %1").arg(m_dataEndpoint);
+    qDebug() << startMsg;
+    emit logReady(startMsg); 
 
-    // 수신 대기 시간을 500ms로 설정 (무한 대기 방지)
-    int timeout = 500;
+    socket.connect(m_dataEndpoint.toStdString());
+    socket.set(zmq::sockopt::subscribe, "");
+
+    int timeout = 500; // 0.5초
     socket.set(zmq::sockopt::rcvtimeo, timeout);
 
-    QString logMsg = QString("[Data] ZMQ PULL 스트리밍 접속 완료 -> %1").arg(m_dataEndpoint);
-    qDebug() << logMsg;
-    emit logReady(logMsg); 
-
-    // 👉 추가: 로그 폭주 방지용 카운터
-    int debugCounter = 0;
+    // 💡 변수 선언 완벽 정리
+    int silenceCounter = 0;   // 데이터 미수신 횟수 카운터
+    bool isConnected = false; // 실제 데이터 수신 여부 플래그
+    int debugCounter = 0;     // 30프레임 확인용 디버그 카운터 (추가됨)
 
     while (m_running) {
         zmq::message_t topic_msg, header_msg, payload_msg;
 
-        // 1. Topic 수신
+        // 1. Topic 수신 시도
         auto r1 = socket.recv(topic_msg, zmq::recv_flags::none);
-        if (!r1) continue; 
+
+        if (!r1) { // 500ms 동안 데이터가 오지 않음
+            silenceCounter++;
+            
+            // 0.5초 * 6번 = 3초 동안 데이터가 없으면 연결 실패/끊김으로 판단
+            if (silenceCounter >= 6 && isConnected) {
+                QString failMsg = "[Data 에러] VCR 서버와 연결이 끊어졌습니다. (데이터 미수신)";
+                qDebug() << failMsg;
+                emit logReady(failMsg);
+                isConnected = false; // 상태 변경
+            } else if (silenceCounter == 6 && !isConnected) {
+                // 처음부터 연결이 안 된 경우
+                QString failMsg = "[Data 에러] VCR 서버(9002)가 닫혀있거나 응답이 없습니다.";
+                qDebug() << failMsg;
+                emit logReady(failMsg);
+            }
+            continue; 
+        }
+
+        // 💡 수정됨: timeoutCounter -> silenceCounter로 통일
+        // 프레임 정상 수신 시 카운터 리셋 및 연결 복구 로그
+        if (!isConnected && silenceCounter > 0) {
+            emit logReady("[Data] VCR 영상 스트리밍 수신 재개됨!");
+        }
+        isConnected = true;
+        silenceCounter = 0; // 카운터 초기화
+
         if (!topic_msg.more()) continue;
 
-        // 2. Header (20 또는 24 Bytes) 수신 
+        // 2. Header 수신 
         auto r2 = socket.recv(header_msg, zmq::recv_flags::none);
         if (!r2 || !header_msg.more()) continue;
 
@@ -49,9 +77,11 @@ void ZmqReceiverWorker::startReceiving() {
         auto r3 = socket.recv(payload_msg, zmq::recv_flags::none);
         if (!r3) continue;
 
+        // 💡 수정됨: 프로그램 크래시 방지를 위한 안전장치(예외 처리) 복구
         if (header_msg.size() != sizeof(ViewerPacketHeader)) {
             qDebug() << "헤더 크기 불일치! 받은 크기:" << header_msg.size() 
                      << "예상 크기:" << sizeof(ViewerPacketHeader);
+            continue; // 비정상 패킷은 스킵 (강제 종료 방지)
         }
 
         // 데이터 검증 및 처리
@@ -59,9 +89,9 @@ void ZmqReceiverWorker::startReceiving() {
             auto* header = static_cast<ViewerPacketHeader*>(header_msg.data());
             
             // ========================================================
-            // 👉 추가된 핵심 코드: 수신된 토픽과 ID를 30프레임마다 출력
+            // 수신된 토픽과 ID를 30프레임마다 출력
             debugCounter++;
-            if (debugCounter % 30 == 0) { 
+            if (debugCounter % 15 == 0) { 
                 QString rcvTopic = QString::fromStdString(std::string(static_cast<const char*>(topic_msg.data()), topic_msg.size()));
                 qDebug() << "👀 [크로스체크] 수신된 토픽명:" << rcvTopic << "| 구조체 내 카메라 ID:" << header->camera_id;
             }
