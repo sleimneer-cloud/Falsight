@@ -9,6 +9,13 @@ YOLO11 Pose 기반 Keypoint 추출 모듈
 전신 필터:
     하체(엉덩이~발목) confidence 평균 < 0.3 → 스킵
     전신이 보이지 않는 경우 오탐 방지
+
+반환값:
+    (results, detections, keypoints_data, keypoints_conf)
+    results:        추론에 사용할 keypoint 리스트
+    detections:     YOLO raw 결과 (디버그 시각화용)
+    keypoints_data: (N, 17, 2) 전체 관절 좌표 (디버그용)
+    keypoints_conf: (N, 17)    전체 관절 confidence (디버그용)
 """
 
 import cv2
@@ -45,6 +52,9 @@ LOWER_BODY_IDX = [11, 12, 13, 14, 15, 16]
 # 하체 감지 최소 confidence
 LOWER_BODY_CONF_THRESHOLD = 0.3
 
+# 빈 반환값 상수
+_EMPTY = ([], None, np.zeros((0, 17, 2)), np.zeros((0, 17)))
+
 
 class KeypointExtractor:
     """
@@ -57,8 +67,7 @@ class KeypointExtractor:
 
     사용 예시:
         extractor = KeypointExtractor()
-        results = extractor.extract(frame)
-        # results: [{"track_id": 1, "keypoints": np.array(34,), "bbox": (x1,y1,x2,y2)}]
+        results, raw_det, kp_data, kp_conf = extractor.extract(frame)
     """
 
     def __init__(self):
@@ -75,7 +84,7 @@ class KeypointExtractor:
             logger.error(f"[Extractor] YOLO11 Pose 로드 실패: {e}")
             self.yolo = None
 
-    def extract(self, frame: np.ndarray) -> list:
+    def extract(self, frame: np.ndarray) -> tuple:
         """
         프레임에서 전신이 보이는 사람만 Keypoint 추출
 
@@ -83,18 +92,21 @@ class KeypointExtractor:
             frame: BGR 이미지 (np.ndarray)
 
         반환:
-            list of dict: [
+            (results, detections, keypoints_data, keypoints_conf)
+
+            results: list of dict [
                 {
                     "track_id": int,
                     "keypoints": np.ndarray (34,),
                     "bbox":      (x1, y1, x2, y2)
-                },
-                ...
+                }, ...
             ]
-            전신 미감지 또는 모델 없으면 빈 리스트 반환
+            detections:     YOLO raw 결과 객체 (디버그용)
+            keypoints_data: np.ndarray (N, 17, 2) (디버그용)
+            keypoints_conf: np.ndarray (N, 17)    (디버그용)
         """
         if self.yolo is None:
-            return []
+            return _EMPTY
 
         # 해상도 조절
         frame = cv2.resize(frame, AI_RESOLUTION)
@@ -104,7 +116,7 @@ class KeypointExtractor:
             detections = self.yolo(frame, verbose=False)[0]
 
             if detections.keypoints is None:
-                return []
+                return _EMPTY
 
             keypoints_data = detections.keypoints.xy.cpu().numpy()    # (N, 17, 2)
             keypoints_conf = detections.keypoints.conf.cpu().numpy()  # (N, 17)
@@ -138,5 +150,6 @@ class KeypointExtractor:
 
         except Exception as e:
             logger.error(f"[Extractor] 추출 오류: {e}")
+            return _EMPTY
 
-        return results
+        return results, detections, keypoints_data, keypoints_conf

@@ -40,7 +40,7 @@ RESULT_UNCERTAIN = "UNCERTAIN"
 RESULT_NON_FALL  = "NON_FALL"
 
 # Scaler 경로 (모델과 같은 폴더)
-SCALER_PATH = "models/fallvision_scaler_v9.pkl"
+SCALER_PATH = "models/fallvision_scaler_v11.pkl"
 
 
 # ── LSTM 모델 정의 ────────────────────────────────────────────
