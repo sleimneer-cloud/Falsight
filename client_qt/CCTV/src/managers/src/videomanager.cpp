@@ -134,7 +134,7 @@ void VideoManager::sendControlCommand(int cameraId, int commandType, float value
         req.end_time = qToBigEndian<uint64_t>(targetTime + 10000); 
 
         tcpSocket.write(reinterpret_cast<const char*>(&req), sizeof(VcrControlRequest));
-        if (tcpSocket.waitForBytesWritten(1000)) {
+        if (tcpSocket.waitForBytesWritten(500)) {
             emit logReady(QString("[Control] CAM %1 영상 탐색 명령 전송 완료 (ID: 300)").arg(cameraId));
         }
         tcpSocket.disconnectFromHost();

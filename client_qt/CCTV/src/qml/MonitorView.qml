@@ -88,7 +88,7 @@ Item {
                     background: Rectangle { color: "#2C75FF"; radius: 5; implicitWidth: 80; implicitHeight: 30 }
                 }
                 Button {
-                    text: "과거 영상"
+                    text: "이벤트 영상"
                     contentItem: Text { text: parent.text; color: "#8A94A6"; font.pixelSize: 13; horizontalAlignment: Text.AlignHCenter }
                     background: Rectangle { color: "#1C2434"; radius: 5; implicitWidth: 80; implicitHeight: 30 }
                     onClicked: stackView.push("PlaybackView.qml")
@@ -131,11 +131,9 @@ Item {
                             border.width: 1
                             property int frameCounter: 0
 
-                            // 👉 추가: C++에서 frameUpdated 시그널이 오면 카운터 증가
                             Connections {
                                 target: sysController
                                 function onFrameUpdated(camId) {
-                                    // 현재 그리는 인덱스와 일치할 때만 갱신
                                     if (camId === index) {
                                         videoFrame.frameCounter++
                                     }
@@ -241,16 +239,16 @@ Item {
                         spacing: 30
 
                         // 10초 뒤로 가기
-                        Button {
-                            text: "⏪ 10s"
-                            contentItem: Text { text: parent.text; color: "white"; font.pixelSize: 13; horizontalAlignment: Text.AlignHCenter }
-                            background: Rectangle { color: "transparent" }
-                            onClicked: {
+                        //Button {
+                            //text: "⏪ 10s"
+                            //contentItem: Text { text: parent.text; color: "white"; font.pixelSize: 13; horizontalAlignment: Text.AlignHCenter }
+                            //background: Rectangle { color: "transparent" }
+                            //onClicked: {
                                 // 슬라이더 값을 감소시키고 C++로 전송 (from 값 이하로 내려가지 않도록 Math.max 사용)
-                                liveSeekSlider.value = Math.max(liveSeekSlider.from, liveSeekSlider.value - 10)
-                                sysController.seekVideo(expandedIndex, liveSeekSlider.value)
-                            }
-                        }
+                                //liveSeekSlider.value = Math.max(liveSeekSlider.from, liveSeekSlider.value - 10)
+                                //sysController.seekVideo(expandedIndex, liveSeekSlider.value)
+                            //}
+                        //}
 
                         // 재생 / 일시정지
                         Button {
@@ -263,16 +261,16 @@ Item {
                         }
 
                         // 10초 앞으로 가기
-                        Button {
-                            text: "10s ⏩"
-                            contentItem: Text { text: parent.text; color: "white"; font.pixelSize: 13; horizontalAlignment: Text.AlignHCenter }
-                            background: Rectangle { color: "transparent" }
-                            onClicked: {
+                        //Button {
+                            //text: "10s ⏩"
+                            //contentItem: Text { text: parent.text; color: "white"; font.pixelSize: 13; horizontalAlignment: Text.AlignHCenter }
+                            //background: Rectangle { color: "transparent" }
+                            //onClicked: {
                                 // 슬라이더 값을 증가시키고 C++로 전송 (to 값 이상으로 올라가지 않도록 Math.min 사용)
-                                liveSeekSlider.value = Math.min(liveSeekSlider.to, liveSeekSlider.value + 10)
-                                sysController.seekVideo(expandedIndex, liveSeekSlider.value)
-                            }
-                        }
+                                //liveSeekSlider.value = Math.min(liveSeekSlider.to, liveSeekSlider.value + 10)
+                                //sysController.seekVideo(expandedIndex, liveSeekSlider.value)
+                            //}
+                        //}
                     }
                 }
             }

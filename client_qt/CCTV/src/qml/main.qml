@@ -7,7 +7,7 @@ Window {
     width: 1280
     height: 720
     visible: true
-    title: "CCTV 모니터링 시스템"
+    title: "낙상 감지 모니터링 시스템"
     color: "#0B111E" // 전체 다크 배경
 
     // 화면(페이지)을 쌓아서 전환할 수 있게 해주는 StackView
