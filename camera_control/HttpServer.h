@@ -157,6 +157,7 @@ private:
     //--------------------------------------------------------------------------
     void log(const std::string& level, const std::string& message) const;
     static std::string get_iso_timestamp();
+    static std::string ms_to_iso(int64_t timestamp_ms);  // Unix ms → ISO 8601
     static int64_t now_ms();
 
     //--------------------------------------------------------------------------
@@ -184,9 +185,26 @@ private:
     //--------------------------------------------------------------------------
     // 상수
     //--------------------------------------------------------------------------
-    static constexpr int DEFAULT_CLIP_DURATION = 240;  // 기본 4분
-    static constexpr int MAX_CLIP_DURATION = 600;  // 최대 10분
-    static constexpr int UPLOAD_TIMEOUT_SEC = 60;   // 업로드 타임아웃 (4분 영상이라 여유)
+
+    // =========================================================================
+    // ★ 클립 시간 설정 (테스트 / 운영 전환)
+    //
+    // [운영 모드] 낙상 전후 각 2분 = 총 4분 (120초 앞 + 120초 뒤)
+    // → 아래 TEST 블록을 주석 처리하고 PRODUCTION 블록 주석 해제
+    //
+    // [테스트 모드] 낙상 전후 각 15초 = 총 30초 (15초 앞 + 15초 뒤)
+    // → 아래 TEST 블록 주석 해제하고 PRODUCTION 블록 주석 처리
+    // =========================================================================
+
+    // ---- 테스트 모드 (더미 데이터 검증용, 총 30초) ----
+    static constexpr int DEFAULT_CLIP_DURATION = 30;   // 테스트: 앞 15초 + 뒤 15초
+    static constexpr int MAX_CLIP_DURATION = 60;   // 테스트: 최대 1분
+    static constexpr int UPLOAD_TIMEOUT_SEC = 10;   // 테스트: 타임아웃 10초
+
+    // ---- 운영 모드 (실제 낙상 감지, 총 4분) ----
+    // static constexpr int DEFAULT_CLIP_DURATION = 240;  // 운영: 앞 2분 + 뒤 2분
+    // static constexpr int MAX_CLIP_DURATION     = 600;  // 운영: 최대 10분
+    // static constexpr int UPLOAD_TIMEOUT_SEC    = 60;   // 운영: 타임아웃 60초
 };
 
 #endif // HTTP_SERVER_H

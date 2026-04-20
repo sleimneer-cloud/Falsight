@@ -168,10 +168,10 @@ private:
     //--------------------------------------------------------------------------
     static constexpr int STREAM_WIDTH = 1280;
     static constexpr int STREAM_HEIGHT = 720;
-    static constexpr int ZMQ_SEND_TIMEOUT_MS = 50;
+    static constexpr int ZMQ_SEND_TIMEOUT_MS = 0;
     static constexpr int ZMQ_RECV_TIMEOUT_MS = 500;  // 구독 이벤트 수신 타임아웃
     static constexpr int ZMQ_LINGER_MS = 0;
-    static constexpr int ZMQ_HWM = 10;
+    static constexpr int ZMQ_HWM = 2;
     static constexpr int STATS_INTERVAL_SEC = 30;    // 통계 출력 주기
 };
 
