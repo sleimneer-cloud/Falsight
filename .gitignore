@@ -1,4 +1,4 @@
-# Python
+# Python (Node 2, Node 3)
 __pycache__/
 *.py[cod]
 *$py.class
@@ -8,28 +8,31 @@ venv/
 *.sqlite3
 *.db
 
-# C++ & CMake
+# C++ & CMake (Node 1)
 build/
 CMakeCache.txt
 CMakeFiles/
 *.o
 *.out
-*.exe
-*.dll
-*.so
 
-# Qt / Build outputs
+# Qt C++ (Client - CCTV 폴더 관련 추가)
 *.pro.user
+*.pro.user.*
+.qmake.stash
+.qtcreator/
 *.moc
+moc_*.cpp
+moc_*.h
 *.obj
 *.rcc
+qrc_*.cpp
+ui_*.h
+*.exe
 Makefile
-Debug/
-Release/
+Makefile.*
 
 # OS & IDE
 .DS_Store
-.vs/
 .vscode/
 .idea/
 
