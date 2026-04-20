@@ -1,18 +1,3 @@
-"""
-modules/worker_process.py
-=========================
-워커 프로세스 — 카메라 1대 전담
-
-역할:
-    1. Queue에서 프레임 꺼내기
-    2. Keypoint 추출 (모델 버전에 따라)
-    3. ByteTrack 추적
-    4. 슬라이딩 윈도우 버퍼 관리
-    5. CNN 추론
-    6. 판정 결과 Result Queue로 전달
-    7. FALL/UNCERTAIN 자동 저장
-"""
-
 import cv2
 import numpy as np
 import logging
@@ -115,6 +100,7 @@ def worker_process(
                 if label == RESULT_FALL:
                     result_queue.put({
                         "camera_id":  camera_id,
+                        "track_id": track_id,
                         "confidence": confidence,
                         "timestamp":  frame_meta.get("timestamp", 0)
                     })

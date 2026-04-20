@@ -3,6 +3,7 @@ __pycache__/
 *.py[cod]
 *$py.class
 venv/
+.venv/          # ← 추가 (.venv 폴더)
 .env
 *.sqlite3
 *.db
@@ -34,3 +35,14 @@ Makefile.*
 .DS_Store
 .vscode/
 .idea/
+
+# Misc
+*.log
+*.tmp
+*.cache
+
+# AI 서버 관련
+*.keras             # 모델 파일 (용량 큼, 별도 공유)
+*.task              # MediaPipe 모델 파일
+ai_server/data/
+ai_server/logs/

@@ -1,197 +1,131 @@
 """
 modules/keypoint_extractor.py
 =============================
-모델 버전별 Keypoint 추출 모듈
+YOLO11 Pose 기반 Keypoint 추출 모듈
 
-모델 1: YOLO → BBox 크롭 → MediaPipe BlazePose (33관절, 99피처)
-모델 2: YOLO11 Pose (17관절, 34피처) - 단일 forward pass
+추출 방식: YOLO11 Pose 단일 forward pass
+관절 수:   COCO 17관절 × (x, y) = 34피처
+
+전신 필터:
+    하체(엉덩이~발목) confidence 평균 < 0.3 → 스킵
+    전신이 보이지 않는 경우 오탐 방지
 """
 
 import cv2
 import numpy as np
 import logging
-from config import MODEL_VERSION, N_FEATURES, AI_RESOLUTION
+from config import N_FEATURES, AI_RESOLUTION
 
 logger = logging.getLogger(__name__)
 
-# ── BlazePose 33관절 → COCO 17관절 매핑 인덱스 ───────────────
-# UP-Fall 컬럼 순서: Joint1_X(0), Joint1_Y(1), Joint1_Z(2), Joint2_X(3)...
-# 추출할 BlazePose 관절 번호 (0-indexed): 17관절
-BLAZEPOSE_TO_COCO_IDX = [0, 2, 5, 7, 8, 11, 12, 13, 14, 15, 16, 23, 24, 25, 26, 27, 28]
+# COCO 17관절 순서
+COCO_KEYPOINTS = [
+    'Nose',           # 0
+    'Left Eye',       # 1
+    'Right Eye',      # 2
+    'Left Ear',       # 3
+    'Right Ear',      # 4
+    'Left Shoulder',  # 5
+    'Right Shoulder', # 6
+    'Left Elbow',     # 7
+    'Right Elbow',    # 8
+    'Left Wrist',     # 9
+    'Right Wrist',    # 10
+    'Left Hip',       # 11
+    'Right Hip',      # 12
+    'Left Knee',      # 13
+    'Right Knee',     # 14
+    'Left Ankle',     # 15
+    'Right Ankle'     # 16
+]
 
-def _get_coco_feature_indices():
-    """17관절의 X, Y 피처 인덱스 반환 (Z 제외)"""
-    indices = []
-    for joint_idx in BLAZEPOSE_TO_COCO_IDX:
-        base = joint_idx * 3
-        indices.append(base)      # X
-        indices.append(base + 1)  # Y
-    return indices  # 34개
+# 하체 관절 인덱스 (엉덩이 ~ 발목)
+LOWER_BODY_IDX = [11, 12, 13, 14, 15, 16]
 
-COCO_FEATURE_INDICES = _get_coco_feature_indices()
+# 하체 감지 최소 confidence
+LOWER_BODY_CONF_THRESHOLD = 0.3
 
 
 class KeypointExtractor:
     """
-    모델 버전에 따라 자동으로 올바른 추출기 사용
+    YOLO11 Pose로 사람 감지 + 17관절 동시 추출
+
+    전신 필터 적용:
+        하체 관절(엉덩이~발목) confidence 평균이
+        LOWER_BODY_CONF_THRESHOLD 미만이면 스킵
+        → CCTV 사각지대 / 부분 가시성 오탐 방지
+
+    사용 예시:
+        extractor = KeypointExtractor()
+        results = extractor.extract(frame)
+        # results: [{"track_id": 1, "keypoints": np.array(34,), "bbox": (x1,y1,x2,y2)}]
     """
 
     def __init__(self):
-        self.model_version = MODEL_VERSION
-        self._init_models()
+        self.yolo = None
+        self._init_model()
 
-    def _init_models(self):
-        """모델 버전에 맞는 도구 초기화"""
-        if self.model_version == 1:
-            self._init_model1()
-        elif self.model_version == 2:
-            self._init_model2()
-
-    def _init_model1(self):
-        """모델 1: YOLO + MediaPipe"""
+    def _init_model(self):
+        """YOLO11 Pose 모델 로드"""
         try:
             from ultralytics import YOLO
-            self.yolo = YOLO("yolov8n.pt")
-            logger.info("[Extractor] YOLO 로드 완료")
-        except Exception as e:
-            logger.error(f"[Extractor] YOLO 로드 실패: {e}")
-            self.yolo = None
-
-        try:
-            import mediapipe as mp
-            from mediapipe.tasks.python.vision import PoseLandmarker
-            from mediapipe.tasks.python.vision.pose_landmarker import PoseLandmarkerOptions
-            from mediapipe.tasks.python import BaseOptions
-            from mediapipe.tasks.python.vision.core.vision_task_running_mode import \
-                VisionTaskRunningMode as VisionRunningMode
-
-            options = PoseLandmarkerOptions(
-                base_options=BaseOptions(model_asset_path="pose_landmarker_lite.task"),
-                running_mode=VisionRunningMode.IMAGE,
-                min_pose_detection_confidence=0.5,
-                min_tracking_confidence=0.5
-            )
-            self.mp_pose = PoseLandmarker.create_from_options(options)
-            self.mp = mp
-            logger.info("[Extractor] MediaPipe 로드 완료")
-        except Exception as e:
-            logger.error(f"[Extractor] MediaPipe 로드 실패: {e}")
-            self.mp_pose = None
-            self.mp = None
-
-    def _init_model2(self):
-        """모델 2: YOLO11 Pose"""
-        try:
-            from ultralytics import YOLO
-            self.yolo11_pose = YOLO("yolo11n-pose.pt")
+            self.yolo = YOLO("yolo11n-pose.pt")
             logger.info("[Extractor] YOLO11 Pose 로드 완료")
         except Exception as e:
             logger.error(f"[Extractor] YOLO11 Pose 로드 실패: {e}")
-            self.yolo11_pose = None
-
-    # ── 공개 메서드 ──────────────────────────────────────────
+            self.yolo = None
 
     def extract(self, frame: np.ndarray) -> list:
         """
-        프레임에서 Keypoint 추출
+        프레임에서 전신이 보이는 사람만 Keypoint 추출
+
+        입력:
+            frame: BGR 이미지 (np.ndarray)
 
         반환:
             list of dict: [
                 {
                     "track_id": int,
-                    "keypoints": np.ndarray (N_FEATURES,),
-                    "bbox": (x1, y1, x2, y2)
+                    "keypoints": np.ndarray (34,),
+                    "bbox":      (x1, y1, x2, y2)
                 },
                 ...
             ]
-            사람 없으면 빈 리스트 반환
+            전신 미감지 또는 모델 없으면 빈 리스트 반환
         """
+        if self.yolo is None:
+            return []
+
         # 해상도 조절
         frame = cv2.resize(frame, AI_RESOLUTION)
 
-        if self.model_version == 1:
-            return self._extract_v1(frame)
-        elif self.model_version == 2:
-            return self._extract_v2(frame)
-        return []
-
-    # ── 모델 1: YOLO + MediaPipe ─────────────────────────────
-
-    def _extract_v1(self, frame: np.ndarray) -> list:
-        """YOLO로 사람 감지 → 크롭 → MediaPipe 33관절 추출"""
-        if self.yolo is None or self.mp_pose is None:
-            return []
-
         results = []
         try:
-            detections = self.yolo(frame, classes=[0], verbose=False)[0]
-            boxes = detections.boxes
-
-            if boxes is None or len(boxes) == 0:
-                return []
-
-            for i, box in enumerate(boxes):
-                x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
-                if (x2 - x1) < 30 or (y2 - y1) < 30:
-                    continue
-
-                cropped = frame[y1:y2, x1:x2]
-
-                # ── 여기서부터 신버전으로 변경 ──────────────────
-                rgb = cv2.cvtColor(cropped, cv2.COLOR_BGR2RGB)
-                mp_image = self.mp.Image(
-                    image_format=self.mp.ImageFormat.SRGB,
-                    data=rgb
-                )
-                pose_result = self.mp_pose.detect(mp_image)
-
-                if not pose_result.pose_landmarks:
-                    continue
-
-                # 33관절 × 3축 = 99 피처 추출
-                kp = []
-                for lm in pose_result.pose_landmarks[0]:  # [0] = 첫 번째 사람
-                    kp.extend([lm.x, lm.y, lm.z])
-                kp = np.array(kp, dtype=np.float32)  # (99,)
-                # ── 여기까지 ─────────────────────────────────────
-
-                results.append({
-                    "track_id": i,
-                    "keypoints": kp,
-                    "bbox": (x1, y1, x2, y2)
-                })
-
-        except Exception as e:
-            logger.error(f"[Extractor v1] 추출 오류: {e}")
-
-        return results
-
-    # ── 모델 2: YOLO11 Pose ──────────────────────────────────
-
-    def _extract_v2(self, frame: np.ndarray) -> list:
-        """YOLO11 Pose로 사람 감지 + 17관절 동시 추출"""
-        if self.yolo11_pose is None:
-            return []
-
-        results = []
-        try:
-            detections = self.yolo11_pose(frame, verbose=False)[0]
+            detections = self.yolo(frame, verbose=False)[0]
 
             if detections.keypoints is None:
                 return []
 
-            keypoints_data = detections.keypoints.xy.cpu().numpy()  # (N, 17, 2)
-            boxes = detections.boxes
+            keypoints_data = detections.keypoints.xy.cpu().numpy()    # (N, 17, 2)
+            keypoints_conf = detections.keypoints.conf.cpu().numpy()  # (N, 17)
+            boxes          = detections.boxes
 
             for i, kp_17 in enumerate(keypoints_data):
-                # 17관절 × 2축 = 34 피처
+
+                # ── 전신 필터: 하체 confidence 체크 ─────────────
+                lower_conf = keypoints_conf[i][LOWER_BODY_IDX].mean()
+                if lower_conf < LOWER_BODY_CONF_THRESHOLD:
+                    logger.debug(
+                        f"[Extractor] 전신 미감지 → 스킵 "
+                        f"(lower_conf={lower_conf:.2f} < {LOWER_BODY_CONF_THRESHOLD})"
+                    )
+                    continue
+
+                # ── Keypoint 추출 (픽셀 좌표 그대로) ────────────
+                # Scaler가 픽셀 좌표 기준으로 학습됨 → 정규화 안 함
                 kp = kp_17.flatten().astype(np.float32)  # (34,)
 
-                # 좌표 정규화 (0~1)
-                h, w = frame.shape[:2]
-                kp[0::2] /= w   # X 정규화
-                kp[1::2] /= h   # Y 정규화
-
+                # bbox 추출
                 bbox = (0, 0, 0, 0)
                 if boxes is not None and i < len(boxes):
                     bbox = tuple(map(int, boxes.xyxy[i].tolist()))
@@ -199,10 +133,10 @@ class KeypointExtractor:
                 results.append({
                     "track_id": i,
                     "keypoints": kp,
-                    "bbox": bbox
+                    "bbox":      bbox
                 })
 
         except Exception as e:
-            logger.error(f"[Extractor v2] 추출 오류: {e}")
+            logger.error(f"[Extractor] 추출 오류: {e}")
 
         return results
