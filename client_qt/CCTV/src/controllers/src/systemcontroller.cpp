@@ -9,7 +9,8 @@
 #include <QTime>
 #include <QJsonDocument> 
 #include <QJsonObject>
-
+#include <QThread>
+#include <QCoreApplication>
 #include <QStandardPaths>
 #include <QDir>
 #include <QFile>
@@ -24,7 +25,8 @@ SystemController::SystemController(QObject *parent) : QObject(parent)
     m_imageProvider = new VideoImageProvider();
     m_webSocket = new QWebSocket(QString(), QWebSocketProtocol::VersionLatest, this);
     
-    connect(m_videoManager, &VideoManager::newFrame, this, &SystemController::onNewFrameReceived);
+    // connect(m_videoManager, &VideoManager::newFrame, this, &SystemController::onNewFrameReceived);
+    connect(m_videoManager, &VideoManager::newFrame, this, &SystemController::onNewFrameReceived, Qt::QueuedConnection);
     connect(m_videoManager, &VideoManager::logReady, this, &SystemController::onLogReady);
     m_videoManager->startStreaming();
 
@@ -100,6 +102,13 @@ void SystemController::seekVideo(int chIndex, float position) {
 
 // ZMQ 워커 -> Manager -> Controller로 데이터가 도착함
 void SystemController::onNewFrameReceived(int cameraId, QByteArray imageData) {
+    // 스레드 확인 로그 추가
+    qDebug() << "onNewFrameReceived 스레드:"
+             << QThread::currentThread()
+             << "메인 스레드:"
+             << QCoreApplication::instance()->thread()
+             << "같음:" << (QThread::currentThread() == 
+                            QCoreApplication::instance()->thread());
     QImage frame;
     // JPEG QByteArray를 QImage로 디코딩
     if (frame.loadFromData(imageData, "JPEG")) {

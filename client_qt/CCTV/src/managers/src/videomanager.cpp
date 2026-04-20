@@ -25,7 +25,9 @@ void ZmqReceiverWorker::startReceiving() {
     emit logReady(startMsg); 
 
     socket.connect(m_dataEndpoint.toStdString());
-    socket.set(zmq::sockopt::subscribe, "");
+    socket.set(zmq::sockopt::subscribe, "cam0");
+    socket.set(zmq::sockopt::subscribe, "cam1");
+
 
     int timeout = 500; // 0.5초
     socket.set(zmq::sockopt::rcvtimeo, timeout);
@@ -124,7 +126,10 @@ VideoManager::VideoManager(const QString& controlEndpoint, QObject* parent)
     m_worker->moveToThread(m_workerThread);
 
     connect(m_workerThread, &QThread::started, m_worker, &ZmqReceiverWorker::startReceiving);
-    connect(m_worker, &ZmqReceiverWorker::frameReceived, this, &VideoManager::newFrame);
+
+
+    // connect(m_worker, &ZmqReceiverWorker::frameReceived, this, &VideoManager::newFrame);
+    connect(m_worker, &ZmqReceiverWorker::frameReceived, this, &VideoManager::newFrame,Qt::QueuedConnection);
     connect(m_worker, &ZmqReceiverWorker::logReady, this, &VideoManager::logReady);
 }
 
