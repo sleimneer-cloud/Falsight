@@ -144,6 +144,7 @@ HttpServer::~HttpServer() {
 // 공개 인터페이스
 //==============================================================================
 
+
 bool HttpServer::start() {
     if (running_.load()) { log("WARN", "이미 실행 중 - start() 무시됨"); return false; }
     running_ = true;
@@ -857,4 +858,7 @@ int64_t HttpServer::now_ms() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::system_clock::now().time_since_epoch()
     ).count();
+}
+std::string HttpServer::get_iso_timestamp() {
+    return ms_to_iso(now_ms());
 }

@@ -13,12 +13,12 @@
  // ★ 추가: 스레드 간 큐(Queue)에서 주고받을 공통 프레임 데이터 구조체
  //==============================================================================
 struct FrameData {
-    int      camera_id;
-    int64_t  timestamp_ms;
-    uint32_t frame_id;
-    cv::Mat  raw;          // 원본 1920x1080
-    cv::Mat  resized;      // 리사이즈 640x480
-    bool     has_motion;   // 모션 감지 여부
+    int      camera_id = -1;
+    int64_t  timestamp_ms = 0;
+    uint32_t frame_id = 0;
+    cv::Mat  raw;
+    cv::Mat  resized;
+    bool     has_motion = false;
 };
 
 //==============================================================================

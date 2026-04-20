@@ -174,7 +174,7 @@ private:
     //--------------------------------------------------------------------------
     // 상수
     //--------------------------------------------------------------------------
-    static constexpr int ZMQ_SEND_TIMEOUT_MS = 100;   // 전송 타임아웃
+    static constexpr int ZMQ_SEND_TIMEOUT_MS = 0;   // 전송 타임아웃
     static constexpr int ZMQ_LINGER_MS = 0;     // 종료 시 대기 시간
     static constexpr int ZMQ_HWM = 10;    // High Water Mark (버퍼)
 };

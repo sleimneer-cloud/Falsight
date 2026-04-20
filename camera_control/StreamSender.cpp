@@ -69,6 +69,7 @@ bool StreamSender::start() {
         socket_->set(zmq::sockopt::xpub_verbose, 1);
 
         socket_->bind(endpoint_);
+        monitor_socket_ = std::make_unique<zmq::socket_t>(context_, zmq::socket_type::xpub);
 
         log("INFO", "========================================");
         log("INFO", "★ StreamSender 소켓 바인드 성공");
@@ -97,30 +98,35 @@ bool StreamSender::start() {
 
 void StreamSender::stop() {
     if (!running_.load()) return;
-    log("INFO", "종료 요청 수신");
     running_ = false;
+
+    // ★ context shutdown → subscriber_monitor_loop의 recv 즉시 해제
+    try { context_.shutdown(); }
+    catch (...) {}
 
     if (worker_.joinable())            worker_.join();
     if (subscriber_thread_.joinable()) subscriber_thread_.join();
     if (stats_thread_.joinable())      stats_thread_.join();
 
-    if (socket_) {
+    {
         std::lock_guard<std::mutex> lock(socket_mutex_);
-        socket_->close();
-        socket_.reset();
-    }
+        if (socket_) {
+            try {
+                // ★ 추가된 부분 (Kill Switch): 
+                // 송신 큐에 남은 프레임이 있더라도 무시하고 즉시 포트를 OS에 반환합니다.
+                socket_->set(zmq::sockopt::linger, 0);
 
-    log("INFO", "=== StreamSender 최종 통계 ===");
-    log("INFO", "총 전송: " + std::to_string(sent_count_.load()));
-    log("INFO", "총 스킵: " + std::to_string(skip_count_.load()));
-    for (int i = 0; i < max_cameras_; i++) {
-        uint64_t count = camera_sent_counts_[i].load();
-        if (count > 0) {
-            log("INFO", "  CAM" + std::to_string(i) + ": " +
-                std::to_string(count) + " 프레임");
+                socket_->close();
+            }
+            catch (...) {}
+            socket_.reset();
         }
     }
-    log("INFO", "종료 완료");
+
+    try { context_.close(); }
+    catch (...) {}
+
+    log("INFO", "StreamSender 종료 완료");
 }
 
 //==============================================================================
@@ -214,12 +220,13 @@ void StreamSender::subscriber_monitor_loop() {
 
         {
             std::lock_guard<std::mutex> lock(socket_mutex_);
-            if (!socket_) break;
+            if (!socket_ || !running_.load()) break;  // ← running_ 체크 추가
             result = socket_->recv(event_msg, zmq::recv_flags::dontwait);
         }
 
         if (!result.has_value()) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            // ★ sleep을 짧게 줄여서 종료 신호를 빨리 감지
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));  // 100 → 50
             continue;
         }
 
@@ -278,7 +285,6 @@ void StreamSender::subscriber_monitor_loop() {
                 "\" (남은 구독자: " + std::to_string(new_count) + "명)");
         }
     }
-
     log("INFO", "구독자 감시 스레드 종료");
 }
 

@@ -103,8 +103,6 @@ void CameraManager::capture_loop() {
     //--------------------------------------------------------------------------
     // 2단계: 프레임 캡처 루프
     //--------------------------------------------------------------------------
-
-    // 타이밍 제어 변수
     using clock = std::chrono::steady_clock;
     const auto frame_interval = std::chrono::milliseconds(1000 / TARGET_FPS);
     auto next_frame_time = clock::now();
@@ -112,8 +110,16 @@ void CameraManager::capture_loop() {
     log("INFO", "캡처 루프 시작 (목표 " + std::to_string(TARGET_FPS) + "fps)");
 
     while (running_.load()) {
+
+        // ★ 루프 맨 앞에서 큐 shutdown 체크 (기존보다 빠른 감지)
+        if (!queue_.is_running()) {
+            log("INFO", "큐 종료 감지 - 캡처 루프 탈출");
+            running_ = false;
+            return;
+        }
+
         //----------------------------------------------------------------------
-        // 2-1: 프레임 타이밍 제어 (15fps 유지)
+        // 2-1: 타이밍 제어
         //----------------------------------------------------------------------
         std::this_thread::sleep_until(next_frame_time);
         next_frame_time += frame_interval;
@@ -124,21 +130,20 @@ void CameraManager::capture_loop() {
         cv::Mat raw;
         capture_ >> raw;
 
-        // 프레임 수신 실패 → 연결 끊김으로 간주
         if (raw.empty()) {
-            log("ERROR", "프레임 수신 실패 - 연결 끊김으로 판단, 스레드 종료");
+            log("ERROR", "프레임 수신 실패 - 연결 끊김, 스레드 종료");
             connected_ = false;
             running_ = false;
-            return;  // V1: 재시도 없이 종료
+            return;
         }
 
         //----------------------------------------------------------------------
-        // 2-3: 모션 감지 (원본 해상도에서 수행 → 정확도 최대화)
+        // 2-3: 모션 감지
         //----------------------------------------------------------------------
         bool has_motion = detect_motion(raw);
 
         //----------------------------------------------------------------------
-        // 2-4: 리사이즈 (AI 서버 / HDD 저장용)
+        // 2-4: 리사이즈
         //----------------------------------------------------------------------
         cv::Mat resized;
         cv::resize(raw, resized, cv::Size(RESIZED_WIDTH, RESIZED_HEIGHT));
@@ -149,18 +154,23 @@ void CameraManager::capture_loop() {
         FrameData fd;
         fd.camera_id = camera_id_;
         fd.timestamp_ms = now_ms();
-        fd.frame_id = frame_id_.fetch_add(1);  // 원자적 증가
-        fd.raw = raw.clone();             // 깊은 복사 (스레드 안전)
-        fd.resized = resized.clone();         // 깊은 복사
+        fd.frame_id = frame_id_.fetch_add(1);
+        fd.raw = raw.clone();
+        fd.resized = resized.clone();
         fd.has_motion = has_motion;
 
         //----------------------------------------------------------------------
-        // 2-6: 큐에 전달
+        // 2-6: 큐에 전달 (push 직전 재확인)
         //----------------------------------------------------------------------
+        if (!queue_.is_running()) {
+            log("INFO", "큐 종료 감지 - 캡처 루프 탈출");
+            running_ = false;
+            return;
+        }
         queue_.push(std::move(fd));
 
         //----------------------------------------------------------------------
-        // 2-7: 주기적 상태 로그 (100프레임마다 ≈ 6.7초)
+        // 2-7: 주기적 상태 로그
         //----------------------------------------------------------------------
         if (fd.frame_id % 100 == 0) {
             log("INFO", "프레임 " + std::to_string(fd.frame_id) +
