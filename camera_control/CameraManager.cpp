@@ -2,8 +2,10 @@
  * @file CameraManager.cpp
  * @brief CameraManager 클래스 구현
  *
- * 로그 형식: [CAM {id}][LEVEL] 메시지
- * 예: [CAM 0][INFO] 카메라 연결 성공
+ * 종료 안전성:
+ * - stop()에서 capture_.release() 1회만 호출
+ * - 소멸자에서 중복 release 방지 (abort 방지)
+ * - 큐 shutdown 감지 시 즉시 탈출 (sleep 전후 이중 체크)
  */
 
 #include "CameraManager.h"
@@ -22,21 +24,42 @@ CameraManager::CameraManager(int camera_id,
     , queue_(queue)
     , motion_threshold_(motion_threshold)
 {
-    // 배경 차분 모델 초기화
-    // - history: 500 프레임 (약 33초 @ 15fps)
-    // - varThreshold: 16 (기본값, 민감도)
-    // - detectShadows: false (그림자 무시 → 성능 향상)
     bg_sub_ = cv::createBackgroundSubtractorMOG2(500, 16, false);
-
     log("INFO", "CameraManager 생성 완료 (threshold=" +
         std::to_string(motion_threshold_) + ")");
 }
 
 CameraManager::~CameraManager() {
-    // 스레드가 실행 중이면 안전 종료
+    //--------------------------------------------------------------------------
+    // ★ 소멸자 안전 처리
+    //
+    // 정상 케이스: main.cpp에서 stop() 이미 호출
+    //   → running_ = false, worker_ join 완료, capture_ release 완료
+    //   → 소멸자에서 추가 작업 불필요
+    //
+    // 예외 케이스: stop()이 호출되지 않은 경우
+    //   → running_ = false 후 join만 수행
+    //   → capture_는 isOpened() 체크 후 release
+    //--------------------------------------------------------------------------
     if (running_.load()) {
-        stop();
+        // 예외 케이스: 스레드가 아직 살아있음
+        running_ = false;
+        if (worker_.joinable()) {
+            worker_.join();
+        }
+        if (capture_.isOpened()) {
+            capture_.release();
+        }
     }
+    else {
+        // 정상 케이스: stop()에서 이미 join 완료
+        // 혹시 joinable 상태면 추가 join
+        if (worker_.joinable()) {
+            worker_.join();
+        }
+        // capture_는 stop()에서 이미 release됨 → 중복 호출 안 함
+    }
+
     log("INFO", "CameraManager 소멸");
 }
 
@@ -45,17 +68,13 @@ CameraManager::~CameraManager() {
 //==============================================================================
 
 bool CameraManager::start() {
-    // 이미 실행 중인지 확인
     if (running_.load()) {
         log("WARN", "이미 실행 중 - start() 무시됨");
         return false;
     }
 
     running_ = true;
-
-    // 캡처 스레드 시작
     worker_ = std::thread(&CameraManager::capture_loop, this);
-
     log("INFO", "캡처 스레드 시작");
     return true;
 }
@@ -68,22 +87,24 @@ void CameraManager::stop() {
 
     log("INFO", "종료 요청 수신");
 
-    // 종료 플래그 설정
+    // 1. 종료 플래그
     running_ = false;
 
-    // 스레드 종료 대기
+    // 2. 스레드 종료 대기
     if (worker_.joinable()) {
         worker_.join();
     }
 
-    // 카메라 리소스 해제
+    // 3. ★ capture_ release (stop()에서만 1회 호출)
+    //    소멸자에서 중복 호출하지 않음
     if (capture_.isOpened()) {
         capture_.release();
     }
 
     connected_ = false;
 
-    log("INFO", "안전 종료 완료 (총 " + std::to_string(frame_id_.load()) + " 프레임 처리)");
+    log("INFO", "안전 종료 완료 (총 " +
+        std::to_string(frame_id_.load()) + " 프레임 처리)");
 }
 
 //==============================================================================
@@ -111,7 +132,10 @@ void CameraManager::capture_loop() {
 
     while (running_.load()) {
 
-        // ★ 루프 맨 앞에서 큐 shutdown 체크 (기존보다 빠른 감지)
+        //----------------------------------------------------------------------
+        // ★ [체크 1] sleep 전 종료/큐 확인
+        // 가장 빠른 감지 포인트
+        //----------------------------------------------------------------------
         if (!queue_.is_running()) {
             log("INFO", "큐 종료 감지 - 캡처 루프 탈출");
             running_ = false;
@@ -119,10 +143,20 @@ void CameraManager::capture_loop() {
         }
 
         //----------------------------------------------------------------------
-        // 2-1: 타이밍 제어
+        // 2-1: 타이밍 제어 (15fps)
         //----------------------------------------------------------------------
         std::this_thread::sleep_until(next_frame_time);
         next_frame_time += frame_interval;
+
+        //----------------------------------------------------------------------
+        // ★ [체크 2] sleep 후 재확인
+        // sleep 중에 종료 신호가 왔을 수 있음
+        //----------------------------------------------------------------------
+        if (!running_.load() || !queue_.is_running()) {
+            log("INFO", "종료 감지 - 캡처 루프 탈출");
+            running_ = false;
+            return;
+        }
 
         //----------------------------------------------------------------------
         // 2-2: 프레임 캡처
@@ -138,12 +172,12 @@ void CameraManager::capture_loop() {
         }
 
         //----------------------------------------------------------------------
-        // 2-3: 모션 감지
+        // 2-3: 모션 감지 (원본 해상도 → 정확도 최대화)
         //----------------------------------------------------------------------
         bool has_motion = detect_motion(raw);
 
         //----------------------------------------------------------------------
-        // 2-4: 리사이즈
+        // 2-4: 리사이즈 (AI 서버 / HDD 저장용)
         //----------------------------------------------------------------------
         cv::Mat resized;
         cv::resize(raw, resized, cv::Size(RESIZED_WIDTH, RESIZED_HEIGHT));
@@ -160,7 +194,7 @@ void CameraManager::capture_loop() {
         fd.has_motion = has_motion;
 
         //----------------------------------------------------------------------
-        // 2-6: 큐에 전달 (push 직전 재확인)
+        // ★ [체크 3] push 직전 재확인
         //----------------------------------------------------------------------
         if (!queue_.is_running()) {
             log("INFO", "큐 종료 감지 - 캡처 루프 탈출");
@@ -170,7 +204,7 @@ void CameraManager::capture_loop() {
         queue_.push(std::move(fd));
 
         //----------------------------------------------------------------------
-        // 2-7: 주기적 상태 로그
+        // 2-7: 주기적 상태 로그 (100프레임마다 ≈ 6.7초)
         //----------------------------------------------------------------------
         if (fd.frame_id % 100 == 0) {
             log("INFO", "프레임 " + std::to_string(fd.frame_id) +
@@ -193,24 +227,16 @@ bool CameraManager::try_connect() {
         return false;
     }
 
-    // ========== 추가/복원 필요한 부분 ==========
-    // 해상도 및 FPS 설정
-    capture_.set(cv::CAP_PROP_FRAME_WIDTH, CAPTURE_WIDTH);   // 1920
-    capture_.set(cv::CAP_PROP_FRAME_HEIGHT, CAPTURE_HEIGHT);  // 1080
-    capture_.set(cv::CAP_PROP_FPS, TARGET_FPS);      // 15
-    // ==========================================
-
-    // 노출/WB 설정
+    capture_.set(cv::CAP_PROP_FRAME_WIDTH, CAPTURE_WIDTH);
+    capture_.set(cv::CAP_PROP_FRAME_HEIGHT, CAPTURE_HEIGHT);
+    capture_.set(cv::CAP_PROP_FPS, TARGET_FPS);
     capture_.set(cv::CAP_PROP_AUTO_EXPOSURE, 0.25);
     capture_.set(cv::CAP_PROP_AUTO_WB, 0);
     capture_.set(cv::CAP_PROP_EXPOSURE, -6);
-
-    // 버퍼 크기 최소화
     capture_.set(cv::CAP_PROP_BUFFERSIZE, 1);
 
-    // 설정 확인 로그
-    int actual_width = static_cast<int>(capture_.get(cv::CAP_PROP_FRAME_WIDTH));
-    int actual_height = static_cast<int>(capture_.get(cv::CAP_PROP_FRAME_HEIGHT));
+    int    actual_width = static_cast<int>(capture_.get(cv::CAP_PROP_FRAME_WIDTH));
+    int    actual_height = static_cast<int>(capture_.get(cv::CAP_PROP_FRAME_HEIGHT));
     double actual_fps = capture_.get(cv::CAP_PROP_FPS);
 
     log("INFO", "카메라 연결 성공");
@@ -230,30 +256,9 @@ bool CameraManager::try_connect() {
 //==============================================================================
 
 bool CameraManager::detect_motion(const cv::Mat& frame) {
-    /**
-     * BackgroundSubtractorMOG2 동작 원리:
-     *
-     * 1. 각 픽셀을 여러 가우시안 분포의 혼합으로 모델링
-     * 2. 새 프레임이 들어오면 각 픽셀이 배경 모델에 맞는지 확인
-     * 3. 맞지 않으면 전경(fg_mask에서 흰색)으로 분류
-     * 4. 모델은 지속적으로 학습/업데이트됨
-     *
-     * fg_mask: 0(배경) 또는 255(전경)의 이진 마스크
-     */
-
     cv::Mat fg_mask;
     bg_sub_->apply(frame, fg_mask);
-
-    // 전경 픽셀 수 카운트
     int motion_pixels = cv::countNonZero(fg_mask);
-
-    /**
-     * 임계값 판단:
-     * - 1920×1080 = 약 207만 픽셀
-     * - 기본 임계값 500 = 전체의 약 0.024%
-     * - 사람 1명이 화면에서 차지하는 비율 생각하면
-     *   500픽셀은 매우 작은 움직임도 감지
-     */
     return (motion_pixels > motion_threshold_);
 }
 
@@ -268,19 +273,9 @@ int64_t CameraManager::now_ms() {
 }
 
 void CameraManager::log(const std::string& level, const std::string& message) const {
-    /**
-     * 로그 형식: [CAM {id}][{LEVEL}] {message}
-     *
-     * V2 예정:
-     * - 파일 로깅 추가
-     * - 로그 레벨 필터링
-     * - 타임스탬프 추가
-     */
-
     std::ostringstream oss;
     oss << "[CAM " << camera_id_ << "][" << level << "] " << message;
 
-    // INFO는 stdout, WARN/ERROR는 stderr
     if (level == "ERROR" || level == "WARN") {
         std::cerr << oss.str() << std::endl;
     }

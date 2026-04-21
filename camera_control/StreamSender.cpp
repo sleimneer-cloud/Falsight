@@ -69,7 +69,6 @@ bool StreamSender::start() {
         socket_->set(zmq::sockopt::xpub_verbose, 1);
 
         socket_->bind(endpoint_);
-        monitor_socket_ = std::make_unique<zmq::socket_t>(context_, zmq::socket_type::xpub);
 
         log("INFO", "========================================");
         log("INFO", "★ StreamSender 소켓 바인드 성공");
@@ -98,34 +97,30 @@ bool StreamSender::start() {
 
 void StreamSender::stop() {
     if (!running_.load()) return;
-    running_ = false;
 
-    // ★ context shutdown → subscriber_monitor_loop의 recv 즉시 해제
-    try { context_.shutdown(); }
-    catch (...) {}
+    log("INFO", "종료 요청 수신");
+    running_ = false;
 
     if (worker_.joinable())            worker_.join();
     if (subscriber_thread_.joinable()) subscriber_thread_.join();
     if (stats_thread_.joinable())      stats_thread_.join();
 
-    {
+    // 메인 소켓 닫기
+    if (socket_) {
         std::lock_guard<std::mutex> lock(socket_mutex_);
-        if (socket_) {
-            try {
-                // ★ 추가된 부분 (Kill Switch): 
-                // 송신 큐에 남은 프레임이 있더라도 무시하고 즉시 포트를 OS에 반환합니다.
-                socket_->set(zmq::sockopt::linger, 0);
-
-                socket_->close();
-            }
-            catch (...) {}
-            socket_.reset();
-        }
+        try { socket_->unbind(endpoint_); }
+        catch (...) {}
+        try { socket_->close(); }
+        catch (...) {}
+        socket_.reset();
     }
 
+    // context 닫기 (모든 소켓 닫힌 후)
     try { context_.close(); }
     catch (...) {}
 
+    log("INFO", "=== StreamSender 최종 통계 ===");
+    log("INFO", "총 전송: " + std::to_string(sent_count_.load()));
     log("INFO", "StreamSender 종료 완료");
 }
 

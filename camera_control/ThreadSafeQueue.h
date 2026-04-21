@@ -72,25 +72,17 @@ public:
      * @note 블로킹 없음 - 실시간 시스템에서 Producer 지연 방지
      */
     void push(T value) {
+        // ★ shutdown 상태면 push 무시
+        if (!running_.load()) return;
+
         {
             std::lock_guard<std::mutex> lock(mutex_);
-
-            // 큐가 가득 찼으면 가장 오래된 것 제거
             if (queue_.size() >= max_size_) {
                 queue_.pop();
                 dropped_count_++;
-
-                // 드롭 발생 시 경고 로그 (100번마다)
-                if (dropped_count_ % 100 == 1) {
-                    std::cerr << "[QUEUE][WARN] 프레임 드롭 발생 (누적: "
-                        << dropped_count_ << ")" << std::endl;
-                }
             }
-
             queue_.push(std::move(value));
         }
-
-        // 대기 중인 Consumer 깨우기
         cond_.notify_one();
     }
 

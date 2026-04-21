@@ -63,31 +63,34 @@ void ControlServer::stop() {
     if (!running_.load()) return;
 
     log("INFO", "종료 요청 수신");
-    running_ = false;
+    running_ = false; // 루프 탈출 신호 발송 (타임아웃에 의해 자연스럽게 빠져나옴)
 
-    // ★ Step 1: context shutdown → recv() 블로킹 즉시 해제
-    try { context_.shutdown(); }
-    catch (...) {}
-
-    // ★ Step 2: 스레드 완전 종료 대기
-    if (server_thread_.joinable()) server_thread_.join();
-
-    // ★ Step 3: 스레드 종료 후 소켓 닫기
-    {
+    // ★ 1. Linger 0 (미련 버리기)
+    if (socket_) {
         std::lock_guard<std::mutex> lock(socket_mutex_);
-        if (socket_) {
-            try {
-                socket_->set(zmq::sockopt::linger, 0);
-                socket_->close();
-            }
-            catch (const std::exception& e) {
-                log("ERROR", "소켓 종료 중 예외: " + std::string(e.what()));
-            }
-            socket_.reset();
-        }
+        try { socket_->set(zmq::sockopt::linger, 0); }
+        catch (...) {}
     }
 
-    // ★ Step 4: context 최종 해제
+    // =========================================================================
+    // ★ 2. context_.shutdown() 완전 삭제! (데드락 원인 제거)
+    // =========================================================================
+
+    // ★ 3. 스레드 자연 종료 대기
+    if (server_thread_.joinable()) server_thread_.join();
+
+    // ★ 4. 연결 물리적 절단 및 소켓 파괴
+    if (socket_) {
+        std::lock_guard<std::mutex> lock(socket_mutex_);
+        // unbind로 ZMQ 내부 I/O 스레드의 의존성을 완전히 끊어냅니다.
+        try { socket_->unbind(endpoint_); }
+        catch (...) {}
+        try { socket_->close(); }
+        catch (...) {}
+        socket_.reset();
+    }
+
+    // ★ 5. 컨텍스트 완전 파괴
     try { context_.close(); }
     catch (...) {}
 

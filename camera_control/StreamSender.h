@@ -143,7 +143,6 @@ private:
     std::thread subscriber_thread_;              // 구독자 감시 스레드
     std::thread stats_thread_;                   // 통계 스레드
     std::atomic<bool> running_{ false };
-    std::unique_ptr<zmq::socket_t> monitor_socket_;
     // 카메라 활성화 상태
     mutable std::mutex enabled_mutex_;
     std::vector<bool> camera_enabled_;

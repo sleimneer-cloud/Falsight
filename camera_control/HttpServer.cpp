@@ -476,6 +476,9 @@ std::string HttpServer::extract_single_file(const std::string& source,
 
     std::ostringstream cmd;
     cmd << "ffmpeg -y "
+        // ★ 녹화 중인 파일도 읽을 수 있게 옵션 추가
+        << "-analyzeduration 10M "
+        << "-probesize 10M "
         << "-ss " << seek_sec
         << " -i \"" << source << "\" "
         << "-t " << duration << " "

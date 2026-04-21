@@ -96,19 +96,34 @@ bool ZmqSender::start() {
 
 void ZmqSender::stop() {
     if (!running_.load()) return;
+
+    // ZmqSender에 log() 함수가 없다면 생략하시거나 std::cout 등을 사용하세요.
+    // log("INFO", "종료 요청 수신"); 
     running_ = false;
 
+    // ★ 1. Linger 0
+    if (socket_) {
+        try { socket_->set(zmq::sockopt::linger, 0); }
+        catch (...) {}
+    }
+
+    // =========================================================================
+    // ★ 2. context_.shutdown() 완전 삭제! 
+    // =========================================================================
+
+    // ★ 3. 스레드 자연 종료 대기
     if (worker_.joinable()) worker_.join();
 
+    // ★ 4. 연결 끊기 및 소켓 파괴
     if (socket_) {
-        try {
-            socket_->close();
-        }
-        catch (...) {}  // ← 예외 무시
+        // (참고) 만약 ZmqSender에 endpoint_ 멤버 변수가 있다면 
+        // try { socket_->disconnect(endpoint_); } catch(...) {} 를 추가하셔도 좋습니다.
+        try { socket_->close(); }
+        catch (...) {}
         socket_.reset();
     }
 
-    // ★ 추가: context 종료
+    // ★ 5. 컨텍스트 완전 파괴
     try { context_.close(); }
     catch (...) {}
 }

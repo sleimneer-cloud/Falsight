@@ -1,14 +1,14 @@
-/**
+ï»¿/**
  * @file main.cpp
- * @brief Node1 ¿ÏÀü ÅëÇÕ (Camera + ZMQ + Storage + HTTP + Control + Stream)
+ * @brief Node1 ì™„ì „ í†µí•© (Camera + ZMQ + Storage + HTTP + Control + Stream)
  *
- * Á¾·á ¼ø¼­ (abort ¹æÁö):
- * 1. ¼­¹ö ÁßÁö
- * 2. ¸ŞÀÎ Å¥ shutdown (Ä«¸Ş¶ó push ºí·ÎÅ· ÇØÁ¦)
- * 3. Ä«¸Ş¶ó ÁßÁö
- * 4. ³ª¸ÓÁö Å¥ shutdown
- * 5. ¿öÄ¿ ½º·¹µå join
- * 6. ¼Û½Å Å¬·¡½º Á¤¸® (¼ÒÄÏ ´İ±â - ¹İµå½Ã ¸¶Áö¸·)
+ * ì¢…ë£Œ ìˆœì„œ (abort ë°©ì§€):
+ * 1. ì„œë²„ ì¤‘ì§€
+ * 2. ë©”ì¸ í shutdown (ì¹´ë©”ë¼ push ë¸”ë¡œí‚¹ í•´ì œ)
+ * 3. ì¹´ë©”ë¼ ì¤‘ì§€
+ * 4. ë‚˜ë¨¸ì§€ í shutdown
+ * 5. ì›Œì»¤ ìŠ¤ë ˆë“œ join
+ * 6. ì†¡ì‹  í´ë˜ìŠ¤ ì •ë¦¬ (ì†Œì¼“ ë‹«ê¸° - ë°˜ë“œì‹œ ë§ˆì§€ë§‰)
  */
 
 #define _CRT_SECURE_NO_WARNINGS
@@ -34,7 +34,7 @@
 #include <memory>
 
  //==============================================================================
- // ¼³Á¤ »ó¼ö
+ // ì„¤ì • ìƒìˆ˜
  //==============================================================================
 
 namespace Config {
@@ -60,23 +60,23 @@ namespace Config {
 }
 
 //==============================================================================
-// Àü¿ª º¯¼ö
+// ì „ì—­ ë³€ìˆ˜
 //==============================================================================
 
 std::atomic<bool> g_running{ true };
 std::atomic<bool> g_show_display{ true };
 
 //==============================================================================
-// ½Ã±×³Î ÇÚµé·¯
+// ì‹œê·¸ë„ í•¸ë“¤ëŸ¬
 //==============================================================================
 
 void signal_handler(int signum) {
-    std::cout << "\n[MAIN] Á¾·á ½ÅÈ£ ¼ö½Å (" << signum << ")" << std::endl;
+    std::cout << "\n[MAIN] ì¢…ë£Œ ì‹ í˜¸ ìˆ˜ì‹  (" << signum << ")" << std::endl;
     g_running = false;
 }
 
 //==============================================================================
-// À¯Æ¿¸®Æ¼
+// ìœ í‹¸ë¦¬í‹°
 //==============================================================================
 
 std::string get_timestamp() {
@@ -99,11 +99,11 @@ void log_main(const std::string& message) {
 }
 
 //==============================================================================
-// µğ½ºÇÃ·¹ÀÌ ¿öÄ¿
+// ë””ìŠ¤í”Œë ˆì´ ì›Œì»¤
 //==============================================================================
 
 void display_worker(std::vector<ThreadSafeQueue<FrameData>*>& queues) {
-    log_main("µğ½ºÇÃ·¹ÀÌ ¿öÄ¿ ½ÃÀÛ (Ä«¸Ş¶ó " + std::to_string(queues.size()) + "´ë)");
+    log_main("ë””ìŠ¤í”Œë ˆì´ ì›Œì»¤ ì‹œì‘ (ì¹´ë©”ë¼ " + std::to_string(queues.size()) + "ëŒ€)");
 
     while (g_running.load()) {
         bool any_frame = false;
@@ -137,9 +137,9 @@ void display_worker(std::vector<ThreadSafeQueue<FrameData>*>& queues) {
         if (g_show_display.load()) {
             int key = cv::waitKey(1);
             if (key == 'q' || key == 'Q' || key == 27) {
-                log_main("q Å° ÀÔ·Â - Á¾·á ½ÃÀÛ");
+                log_main("q í‚¤ ì…ë ¥ - ì¢…ë£Œ ì‹œì‘");
                 g_running = false;
-                break;  // ¡Ú Áï½Ã ·çÇÁ Å»Ãâ
+                break;
             }
             else if (key == 'd' || key == 'D') {
                 g_show_display = !g_show_display.load();
@@ -153,21 +153,21 @@ void display_worker(std::vector<ThreadSafeQueue<FrameData>*>& queues) {
     }
 
     cv::destroyAllWindows();
-    log_main("µğ½ºÇÃ·¹ÀÌ ¿öÄ¿ Á¾·á");
+    log_main("ë””ìŠ¤í”Œë ˆì´ ì›Œì»¤ ì¢…ë£Œ");
 }
 
 //==============================================================================
-// ¸ŞÀÎ ÇÔ¼ö
+// ë©”ì¸ í•¨ìˆ˜
 //==============================================================================
 
 int main(int argc, char* argv[]) {
     std::cout << "==========================================" << std::endl;
     std::cout << "  Node1 Vision Gateway (Full + Stream)" << std::endl;
     std::cout << "==========================================" << std::endl;
-    std::cout << "  - Ä«¸Ş¶ó: " << Config::CAMERA_COUNT << "´ë" << std::endl;
-    std::cout << "  - AI ¼­¹ö    :" << Config::AI_SERVER_PORT << " (PUSH)" << std::endl;
-    std::cout << "  - ½ºÆ®¸®¹Ö   :" << Config::STREAM_PORT << " (PUB)" << std::endl;
-    std::cout << "  - Á¦¾î       :" << Config::CONTROL_PORT << " (REP)" << std::endl;
+    std::cout << "  - ì¹´ë©”ë¼: " << Config::CAMERA_COUNT << "ëŒ€" << std::endl;
+    std::cout << "  - AI ì„œë²„    :" << Config::AI_SERVER_PORT << " (PUSH)" << std::endl;
+    std::cout << "  - ìŠ¤íŠ¸ë¦¬ë°   :" << Config::STREAM_PORT << " (PUB)" << std::endl;
+    std::cout << "  - ì œì–´       :" << Config::CONTROL_PORT << " (REP)" << std::endl;
     std::cout << "  - HTTP       :" << Config::HTTP_PORT << std::endl;
     std::cout << "==========================================" << std::endl;
 
@@ -175,7 +175,7 @@ int main(int argc, char* argv[]) {
     std::signal(SIGTERM, signal_handler);
 
     //--------------------------------------------------------------------------
-    // ¼³Á¤ ÆÄ½Ì
+    // ì„¤ì • íŒŒì‹±
     //--------------------------------------------------------------------------
     std::string ai_server_ip = Config::DEFAULT_AI_SERVER_IP;
     std::string storage_path = Config::DEFAULT_STORAGE_PATH;
@@ -185,12 +185,12 @@ int main(int argc, char* argv[]) {
     if (argc > 2) storage_path = argv[2];
     if (argc > 3) main_server_ip = argv[3];
 
-    log_main("AI ¼­¹ö: " + ai_server_ip + ":" + std::to_string(Config::AI_SERVER_PORT));
-    log_main("ÀúÀå °æ·Î: " + storage_path);
-    log_main("Main ¼­¹ö: " + main_server_ip);
+    log_main("AI ì„œë²„: " + ai_server_ip + ":" + std::to_string(Config::AI_SERVER_PORT));
+    log_main("ì €ì¥ ê²½ë¡œ: " + storage_path);
+    log_main("Main ì„œë²„: " + main_server_ip);
 
     //--------------------------------------------------------------------------
-    // 1. Å¥ »ı¼º
+    // 1. í ìƒì„±
     //--------------------------------------------------------------------------
     std::vector<std::unique_ptr<ThreadSafeQueue<FrameData>>> main_queues;
     std::vector<std::unique_ptr<ThreadSafeQueue<FrameData>>> display_queues;
@@ -207,10 +207,10 @@ int main(int argc, char* argv[]) {
         storage_queues.push_back(
             std::make_unique<ThreadSafeQueue<FrameData>>(Config::QUEUE_SIZE));
     }
-    log_main("Å¥ »ı¼º ¿Ï·á");
+    log_main("í ìƒì„± ì™„ë£Œ");
 
     //--------------------------------------------------------------------------
-    // 2. Ä«¸Ş¶ó ¹× ½ºÅä¸®Áö »ı¼º
+    // 2. ì¹´ë©”ë¼ ë° ìŠ¤í† ë¦¬ì§€ ìƒì„±
     //--------------------------------------------------------------------------
     std::vector<std::unique_ptr<CameraManager>>  cameras;
     std::vector<std::unique_ptr<StorageManager>> storage_managers;
@@ -223,42 +223,47 @@ int main(int argc, char* argv[]) {
             Config::CAMERA_IDS[i], storage_path, *storage_queues[i], Config::STORAGE_FPS));
         storage_managers.back()->start();
     }
-    log_main("Ä«¸Ş¶ó/½ºÅä¸®Áö »ı¼º ¿Ï·á");
+    log_main("ì¹´ë©”ë¼/ìŠ¤í† ë¦¬ì§€ ìƒì„± ì™„ë£Œ");
 
     //--------------------------------------------------------------------------
-    // 3. ZmqSender (AI ¼­¹ö Àü¼Û)
+    // 3. ZmqSender (AI ì„œë²„ ì „ì†¡)
     //--------------------------------------------------------------------------
     auto zmq_sender = std::make_unique<ZmqSender>(
         ai_server_ip, shared_zmq_queue, Config::AI_SERVER_PORT);
     zmq_sender->start();
-    log_main("ZmqSender ½ÃÀÛ");
+    log_main("ZmqSender ì‹œì‘");
 
     //--------------------------------------------------------------------------
-    // 4. StreamSender (Å¬¶óÀÌ¾ğÆ® ½ºÆ®¸®¹Ö)
+    // 4. StreamSender (í´ë¼ì´ì–¸íŠ¸ ìŠ¤íŠ¸ë¦¬ë°)
     //--------------------------------------------------------------------------
     auto stream_sender = std::make_unique<StreamSender>(
         Config::STREAM_PORT, shared_stream_queue, Config::MAX_CAMERAS);
     stream_sender->start();
 
+    // â˜… ì¹´ë©”ë¼ í™œì„±í™” - ê²°ê³¼ ë¡œê·¸ ì¶œë ¥
+    log_main("========== ì¹´ë©”ë¼ ìŠ¤íŠ¸ë¦¬ë° í™œì„±í™” ==========");
     for (int i = 0; i < Config::CAMERA_COUNT; i++) {
-        stream_sender->enable_camera(Config::CAMERA_IDS[i]);
+        bool result = stream_sender->enable_camera(Config::CAMERA_IDS[i]);
+        log_main("CAM" + std::to_string(Config::CAMERA_IDS[i]) +
+            " enable_camera ê²°ê³¼: " + (result ? "âœ… ì„±ê³µ" : "âŒ ì‹¤íŒ¨") +
+            " | is_enabled: " + (stream_sender->is_camera_enabled(Config::CAMERA_IDS[i]) ? "true" : "false"));
     }
-    log_main("StreamSender ½ÃÀÛ (¸ğµç Ä«¸Ş¶ó ½ºÆ®¸®¹Ö ON)");
+    log_main("=========================================");
 
     //--------------------------------------------------------------------------
-    // 5. ControlServer (Å¬¶óÀÌ¾ğÆ® Á¦¾î)
+    // 5. ControlServer (í´ë¼ì´ì–¸íŠ¸ ì œì–´)
     //--------------------------------------------------------------------------
     ControlServer control_server(Config::CONTROL_PORT);
 
     control_server.set_system_start_callback([&]() {
-        log_main("[CTRL] ÀüÃ¼ ½ºÆ®¸®¹Ö È°¼ºÈ­");
+        log_main("[CTRL] ì „ì²´ ìŠ¤íŠ¸ë¦¬ë° í™œì„±í™”");
         for (int i = 0; i < Config::CAMERA_COUNT; i++)
             stream_sender->enable_camera(Config::CAMERA_IDS[i]);
         return true;
         });
 
     control_server.set_system_stop_callback([&]() {
-        log_main("[CTRL] ÀüÃ¼ ½ºÆ®¸®¹Ö ºñÈ°¼ºÈ­");
+        log_main("[CTRL] ì „ì²´ ìŠ¤íŠ¸ë¦¬ë° ë¹„í™œì„±í™”");
         stream_sender->disable_all_cameras();
         return true;
         });
@@ -269,7 +274,7 @@ int main(int argc, char* argv[]) {
             if (Config::CAMERA_IDS[i] == cam_id) { valid = true; break; }
         }
         if (!valid) {
-            log_main("[CTRL] Á¸ÀçÇÏÁö ¾Ê´Â Ä«¸Ş¶ó: " + std::to_string(cam_id));
+            log_main("[CTRL] ì¡´ì¬í•˜ì§€ ì•ŠëŠ” ì¹´ë©”ë¼: " + std::to_string(cam_id));
             return false;
         }
         if (turn_on) {
@@ -294,10 +299,10 @@ int main(int argc, char* argv[]) {
         });
 
     control_server.start();
-    log_main("ControlServer ½ÃÀÛ (:" + std::to_string(Config::CONTROL_PORT) + ")");
+    log_main("ControlServer ì‹œì‘ (:" + std::to_string(Config::CONTROL_PORT) + ")");
 
     //--------------------------------------------------------------------------
-    // 6. HttpServer (Main Server Åë½Å)
+    // 6. HttpServer (Main Server í†µì‹ )
     //--------------------------------------------------------------------------
     HttpServer http_server(Config::HTTP_PORT, storage_path,
         main_server_ip, Config::MAIN_SERVER_PORT);
@@ -311,38 +316,72 @@ int main(int argc, char* argv[]) {
         });
 
     http_server.start();
-    log_main("HttpServer ½ÃÀÛ (:" + std::to_string(Config::HTTP_PORT) + ")");
+    log_main("HttpServer ì‹œì‘ (:" + std::to_string(Config::HTTP_PORT) + ")");
 
     //--------------------------------------------------------------------------
-    // 7. ºĞ¹è ½º·¹µå Á¤ÀÇ
+    // 7. ë¶„ë°° ìŠ¤ë ˆë“œ ì •ì˜
     //--------------------------------------------------------------------------
+
+    // â˜… ë¶„ë°° ìŠ¤ë ˆë“œë³„ í†µê³„ (CAM1 ìŠ¤íŠ¸ë¦¬ë° í™•ì¸ìš©)
+    std::atomic<uint64_t> dist_stream_count_cam0{ 0 };
+    std::atomic<uint64_t> dist_stream_count_cam1{ 0 };
+
     auto distributor = [&](int cam_index) {
-        log_main("[DIST][CAM" + std::to_string(cam_index) + "] ºĞ¹è ½º·¹µå ½ÃÀÛ");
+        log_main("[DIST][CAM" + std::to_string(cam_index) + "] ë¶„ë°° ìŠ¤ë ˆë“œ ì‹œì‘");
         FrameData frame;
+        uint64_t local_total = 0;
+        uint64_t local_stream = 0;
 
         while (main_queues[cam_index]->pop(frame)) {
             if (!g_running.load()) break;
 
-            display_queues[cam_index]->push(frame);   // µğ½ºÇÃ·¹ÀÌ
-            storage_queues[cam_index]->push(frame);   // ÀúÀå
+            local_total++;
 
-            if (frame.has_motion)                     // AI (¸ğ¼Ç ½Ã¸¸)
+            // 1. ë””ìŠ¤í”Œë ˆì´
+            display_queues[cam_index]->push(frame);
+
+            // 2. ì €ì¥
+            storage_queues[cam_index]->push(frame);
+
+            // 3. AI (ëª¨ì…˜ ì‹œë§Œ)
+            if (frame.has_motion)
                 shared_zmq_queue.push(frame);
 
-            if (stream_sender->is_camera_enabled(frame.camera_id))  // ½ºÆ®¸®¹Ö
+            // 4. ìŠ¤íŠ¸ë¦¬ë°
+            bool enabled = stream_sender->is_camera_enabled(frame.camera_id);
+
+            // â˜… ì²˜ìŒ 100í”„ë ˆì„ë§ˆë‹¤ ìŠ¤íŠ¸ë¦¬ë° ìƒíƒœ ë¡œê·¸
+            if (local_total <= 5 || local_total % 300 == 0) {
+                log_main("[DIST][CAM" + std::to_string(cam_index) +
+                    "] frame=" + std::to_string(frame.frame_id) +
+                    " camera_id=" + std::to_string(frame.camera_id) +
+                    " enabled=" + (enabled ? "true" : "false") +
+                    " stream_count=" + std::to_string(local_stream));
+            }
+
+            if (enabled) {
                 shared_stream_queue.push(frame);
+                local_stream++;
+
+                // ì¹´ë©”ë¼ë³„ ì¹´ìš´í„° ëˆ„ì 
+                if (cam_index == 0) dist_stream_count_cam0++;
+                else                dist_stream_count_cam1++;
+            }
         }
-        log_main("[DIST][CAM" + std::to_string(cam_index) + "] ºĞ¹è ½º·¹µå Á¾·á");
+
+        log_main("[DIST][CAM" + std::to_string(cam_index) + "] ë¶„ë°° ìŠ¤ë ˆë“œ ì¢…ë£Œ" +
+            " (ì´=" + std::to_string(local_total) +
+            " ìŠ¤íŠ¸ë¦¼=" + std::to_string(local_stream) + ")");
         };
 
     //--------------------------------------------------------------------------
-    // 8. ½º·¹µå °¡µ¿
+    // 8. ìŠ¤ë ˆë“œ ê°€ë™
     //--------------------------------------------------------------------------
     std::vector<std::thread> threads;
 
     for (int i = 0; i < Config::CAMERA_COUNT; i++) {
         if (!cameras[i]->start())
-            log_main("Ä«¸Ş¶ó " + std::to_string(Config::CAMERA_IDS[i]) + " ½ÃÀÛ ½ÇÆĞ");
+            log_main("ì¹´ë©”ë¼ " + std::to_string(Config::CAMERA_IDS[i]) + " ì‹œì‘ ì‹¤íŒ¨");
     }
 
     std::vector<ThreadSafeQueue<FrameData>*> display_queue_ptrs;
@@ -352,77 +391,79 @@ int main(int argc, char* argv[]) {
     for (int i = 0; i < Config::CAMERA_COUNT; i++)
         threads.emplace_back(distributor, i);
 
-    log_main("========== ½Ã½ºÅÛ °¡µ¿ ¿Ï·á ==========");
-    log_main("½ºÆ®¸®¹Ö: tcp://localhost:" + std::to_string(Config::STREAM_PORT));
-    log_main("Á¦¾î:     tcp://localhost:" + std::to_string(Config::CONTROL_PORT));
+    log_main("========== ì‹œìŠ¤í…œ ê°€ë™ ì™„ë£Œ ==========");
+    log_main("ìŠ¤íŠ¸ë¦¬ë°: tcp://localhost:" + std::to_string(Config::STREAM_PORT));
+    log_main("ì œì–´:     tcp://localhost:" + std::to_string(Config::CONTROL_PORT));
 
     //--------------------------------------------------------------------------
-    // 9. ¸ŞÀÎ ·çÇÁ
+    // 9. ë©”ì¸ ë£¨í”„
     //--------------------------------------------------------------------------
     while (g_running.load()) {
         std::this_thread::sleep_for(std::chrono::seconds(10));
 
         if (g_running.load()) {
-            log_main("=== ½Ã½ºÅÛ »óÅÂ ===");
+            log_main("=== ì‹œìŠ¤í…œ ìƒíƒœ ===");
             for (int i = 0; i < Config::CAMERA_COUNT; i++) {
                 int cam_id = Config::CAMERA_IDS[i];
                 log_main("CAM" + std::to_string(cam_id) +
-                    " ¿¬°á:" + (cameras[i]->is_connected() ? "O" : "X") +
-                    " Ä¸Ã³:" + std::to_string(cameras[i]->get_frame_count()) +
-                    " ½ºÆ®¸²:" + (stream_sender->is_camera_enabled(cam_id) ? "ON" : "OFF") +
-                    "(" + std::to_string(stream_sender->get_camera_sent_count(cam_id)) + ")");
+                    " ì—°ê²°:" + (cameras[i]->is_connected() ? "O" : "X") +
+                    " ìº¡ì²˜:" + std::to_string(cameras[i]->get_frame_count()) +
+                    " ìŠ¤íŠ¸ë¦¼:" + (stream_sender->is_camera_enabled(cam_id) ? "ON" : "OFF") +
+                    "(" + std::to_string(stream_sender->get_camera_sent_count(cam_id)) + ")" +
+                    " dist_stream=" + std::to_string(cam_id == 0 ?
+                        dist_stream_count_cam0.load() : dist_stream_count_cam1.load()));
             }
-            log_main("AI Àü¼Û:" + std::to_string(zmq_sender->get_sent_count()) +
+            log_main("AI ì „ì†¡:" + std::to_string(zmq_sender->get_sent_count()) +
                 " | HTTP:" + std::to_string(http_server.get_request_count()) +
-                " | Á¦¾î:" + std::to_string(control_server.get_command_count()));
+                " | ì œì–´:" + std::to_string(control_server.get_command_count()));
         }
     }
 
     //--------------------------------------------------------------------------
-    // 10. ¾ÈÀü Á¾·á
-    //
-    // ¡Ú ÇÙ½É ¼ø¼­:
-    // Step 1. ¼­¹ö ÁßÁö       ¡æ »õ ¿äÃ» Â÷´Ü
-    // Step 2. ¸ŞÀÎ Å¥ shutdown ¡æ Ä«¸Ş¶ó push ºí·ÎÅ· ÇØÁ¦
-    // Step 3. Ä«¸Ş¶ó ÁßÁö     ¡æ push ºí·ÎÅ· ¾øÀÌ Áï½Ã Á¾·á
-    // Step 4. ³ª¸ÓÁö Å¥ shutdown ¡æ ºĞ¹è/ÀúÀå/½ºÆ®¸² ½º·¹µå Á¾·á
-    // Step 5. ¿öÄ¿ ½º·¹µå join ¡æ ¸ğµç ½º·¹µå ¿ÏÀü Á¾·á È®ÀÎ
-    // Step 6. ¼Û½Å Å¬·¡½º Á¤¸® ¡æ ¼ÒÄÏ ´İ±â (¹İµå½Ã ¸¶Áö¸·)
+    // 10. ì•ˆì „ ì¢…ë£Œ
     //--------------------------------------------------------------------------
-    log_main("========== Á¾·á Ã³¸® ½ÃÀÛ ==========");
+    log_main("========== ì¢…ë£Œ ì²˜ë¦¬ ì‹œì‘ ==========");
 
-    // Step 1: ¼­¹ö ÁßÁö
+    // Step 1: ì„œë²„ ì¤‘ì§€
     control_server.stop();
     http_server.stop();
-    log_main("¼­¹ö ÁßÁö ¿Ï·á");
+    log_main("ì„œë²„ ì¤‘ì§€ ì™„ë£Œ");
 
-    // Step 2: ¸ŞÀÎ Å¥ shutdown
+    // Step 2: ë©”ì¸ í shutdown
     for (auto& q : main_queues) q->shutdown();
-    log_main("¸ŞÀÎ Å¥ Á¾·á ¿Ï·á");
+    log_main("ë©”ì¸ í ì¢…ë£Œ ì™„ë£Œ");
 
-    // Step 3: Ä«¸Ş¶ó ÁßÁö
+    // Step 3: ì¹´ë©”ë¼ ì¤‘ì§€
     for (auto& cam : cameras) cam->stop();
-    log_main("Ä«¸Ş¶ó ÁßÁö ¿Ï·á");
+    log_main("ì¹´ë©”ë¼ ì¤‘ì§€ ì™„ë£Œ");
 
-    // Step 4: ³ª¸ÓÁö Å¥ shutdown
+    // Step 4: ë‚˜ë¨¸ì§€ í shutdown
     for (auto& q : display_queues) q->shutdown();
     for (auto& q : storage_queues) q->shutdown();
     shared_zmq_queue.shutdown();
     shared_stream_queue.shutdown();
-    log_main("Å¥ Á¾·á ¿Ï·á");
+    log_main("í ì¢…ë£Œ ì™„ë£Œ");
 
-    // Step 5: ¿öÄ¿ ½º·¹µå ¿ÏÀü Á¾·á ´ë±â
+    // Step 5: ì›Œì»¤ ìŠ¤ë ˆë“œ ì™„ì „ ì¢…ë£Œ ëŒ€ê¸°
     for (auto& t : threads) {
         if (t.joinable()) t.join();
     }
-    log_main("¿öÄ¿ ½º·¹µå Á¾·á ¿Ï·á");
+    log_main("ì›Œì»¤ ìŠ¤ë ˆë“œ ì¢…ë£Œ ì™„ë£Œ");
 
-    // Step 6: ¼Û½Å Å¬·¡½º Á¤¸® (¼ÒÄÏ ´İ±â - ¹İµå½Ã ¸¶Áö¸·)
+    // â˜… Step 6: ì†¡ì‹  í´ë˜ìŠ¤ ì •ë¦¬ (1íšŒë§Œ í˜¸ì¶œ)
+    log_main("stream_sender stop ì‹œì‘");
     stream_sender->stop();
-    zmq_sender->stop();
-    for (auto& sm : storage_managers) sm->stop();
-    log_main("¼Û½Å Å¬·¡½º Á¤¸® ¿Ï·á");
+    log_main("stream_sender stop ì™„ë£Œ");
 
-    log_main("========== ÇÁ·Î±×·¥ Á¤»ó Á¾·á ==========");
+    log_main("zmq_sender stop ì‹œì‘");
+    zmq_sender->stop();
+    log_main("zmq_sender stop ì™„ë£Œ");
+
+    log_main("storage_managers stop ì‹œì‘");
+    for (auto& sm : storage_managers) sm->stop();
+    log_main("storage_managers stop ì™„ë£Œ");
+
+    log_main("ì†¡ì‹  í´ë˜ìŠ¤ ì •ë¦¬ ì™„ë£Œ");
+    log_main("========== í”„ë¡œê·¸ë¨ ì •ìƒ ì¢…ë£Œ ==========");
     return 0;
 }
