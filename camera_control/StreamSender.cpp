@@ -1,13 +1,6 @@
 /**
  * @file StreamSender.cpp
- * @brief StreamSender 구현 (전 구간 로그 강화 버전)
- *
- * 로그 강화 포인트:
- * - 소켓 바인드 성공 여부
- * - 클라이언트 구독 연결 / 해제 감지
- * - 프레임 전송 성공 / 실패
- * - 카메라 활성화 상태
- * - 주기적 통계 (fps / 대역폭 / 구독자 수)
+ * @brief StreamSender 구현 (다중 포트 및 ZMQ 데드락 방어 강화 버전)
  */
 
 #define _CRT_SECURE_NO_WARNINGS
@@ -37,13 +30,18 @@ StreamSender::StreamSender(uint16_t port,
     , last_camera_frame_counts_(max_cameras, 0)
     , last_camera_byte_counts_(max_cameras, 0)
 {
-    endpoint_ = "tcp://*:" + std::to_string(port_);
+    // ★ 변경: 카메라 수만큼 포트 주소 할당 (예: 9001, 9002...)
+    endpoints_.resize(max_cameras_);
+    sockets_.resize(max_cameras_);
+    for (int i = 0; i < max_cameras_; i++) {
+        endpoints_[i] = "tcp://*:" + std::to_string(port_ + i);
+    }
 
     for (auto& c : camera_sent_counts_) c.store(0);
     for (auto& c : camera_sent_bytes_)  c.store(0);
 
-    log("INFO", "StreamSender 생성");
-    log("INFO", "  포트: " + std::to_string(port_));
+    log("INFO", "StreamSender 생성 (다중 포트 모드)");
+    log("INFO", "  시작 포트: " + std::to_string(port_));
     log("INFO", "  해상도: " + std::to_string(STREAM_WIDTH) + "x" + std::to_string(STREAM_HEIGHT));
     log("INFO", "  max_cameras: " + std::to_string(max_cameras_));
 }
@@ -61,25 +59,24 @@ bool StreamSender::start() {
     if (running_.load()) { log("WARN", "이미 실행 중"); return false; }
 
     try {
-        socket_ = std::make_unique<zmq::socket_t>(context_, zmq::socket_type::xpub);
-        socket_->set(zmq::sockopt::linger, ZMQ_LINGER_MS);
-        socket_->set(zmq::sockopt::sndhwm, ZMQ_HWM);
-        socket_->set(zmq::sockopt::sndtimeo, ZMQ_SEND_TIMEOUT_MS);
-        socket_->set(zmq::sockopt::rcvtimeo, ZMQ_RECV_TIMEOUT_MS);
-        socket_->set(zmq::sockopt::xpub_verbose, 1);
-
-        socket_->bind(endpoint_);
-
         log("INFO", "========================================");
-        log("INFO", "★ StreamSender 소켓 바인드 성공");
-        log("INFO", "  주소: " + endpoint_);
+        // ★ 변경: 카메라 수만큼 소켓을 각각 생성하고 바인드
+        for (int i = 0; i < max_cameras_; i++) {
+            sockets_[i] = std::make_unique<zmq::socket_t>(context_, zmq::socket_type::xpub);
+            sockets_[i]->set(zmq::sockopt::linger, ZMQ_LINGER_MS);
+            sockets_[i]->set(zmq::sockopt::sndhwm, ZMQ_HWM);
+            sockets_[i]->set(zmq::sockopt::sndtimeo, ZMQ_SEND_TIMEOUT_MS);
+            sockets_[i]->set(zmq::sockopt::rcvtimeo, ZMQ_RECV_TIMEOUT_MS);
+            sockets_[i]->set(zmq::sockopt::xpub_verbose, 1);
+
+            sockets_[i]->bind(endpoints_[i]);
+            log("INFO", "★ CAM" + std::to_string(i) + " 소켓 바인드 성공: " + endpoints_[i]);
+        }
         log("INFO", "  클라이언트 접속 대기 중...");
-        log("INFO", "  구독 토픽 형식: \"cam0\", \"cam1\", ...");
         log("INFO", "========================================");
     }
     catch (const zmq::error_t& e) {
         log("ERROR", "★ ZMQ 초기화 실패: " + std::string(e.what()));
-        log("ERROR", "  → 포트 " + std::to_string(port_) + " 가 이미 사용 중인지 확인");
         return false;
     }
 
@@ -106,13 +103,18 @@ void StreamSender::stop() {
     if (stats_thread_.joinable())      stats_thread_.join();
 
     // 메인 소켓 닫기
-    if (socket_) {
+    if (true) { // scope block for lock
         std::lock_guard<std::mutex> lock(socket_mutex_);
-        try { socket_->unbind(endpoint_); }
-        catch (...) {}
-        try { socket_->close(); }
-        catch (...) {}
-        socket_.reset();
+        // ★ 변경: 배열을 순회하며 모든 소켓 닫기
+        for (int i = 0; i < max_cameras_; i++) {
+            if (sockets_[i]) {
+                try { sockets_[i]->unbind(endpoints_[i]); }
+                catch (...) {}
+                try { sockets_[i]->close(); }
+                catch (...) {}
+                sockets_[i].reset();
+            }
+        }
     }
 
     // context 닫기 (모든 소켓 닫힌 후)
@@ -125,20 +127,14 @@ void StreamSender::stop() {
 }
 
 //==============================================================================
-// 카메라 제어
+// 카메라 제어 (기존 로직 유지)
 //==============================================================================
 
 bool StreamSender::enable_camera(int camera_id) {
-    if (!is_valid_camera_id(camera_id)) {
-        log("WARN", "★ 잘못된 카메라 ID: " + std::to_string(camera_id));
-        return false;
-    }
+    if (!is_valid_camera_id(camera_id)) return false;
     {
         std::lock_guard<std::mutex> lock(enabled_mutex_);
-        if (camera_enabled_[camera_id]) {
-            log("INFO", "CAM" + std::to_string(camera_id) + " 이미 활성화됨");
-            return true;
-        }
+        if (camera_enabled_[camera_id]) return true;
         camera_enabled_[camera_id] = true;
     }
     log("INFO", "★ CAM" + std::to_string(camera_id) + " 스트리밍 활성화");
@@ -146,10 +142,7 @@ bool StreamSender::enable_camera(int camera_id) {
 }
 
 bool StreamSender::disable_camera(int camera_id) {
-    if (!is_valid_camera_id(camera_id)) {
-        log("WARN", "★ 잘못된 카메라 ID: " + std::to_string(camera_id));
-        return false;
-    }
+    if (!is_valid_camera_id(camera_id)) return false;
     {
         std::lock_guard<std::mutex> lock(enabled_mutex_);
         if (!camera_enabled_[camera_id]) return true;
@@ -202,7 +195,6 @@ int StreamSender::get_total_subscriber_count() const {
 
 //==============================================================================
 // 구독자 감지 스레드 (XPUB 이벤트)
-// ★ 클라이언트가 붙거나 떨어질 때 여기서 감지
 //==============================================================================
 
 void StreamSender::subscriber_monitor_loop() {
@@ -210,86 +202,81 @@ void StreamSender::subscriber_monitor_loop() {
     log("INFO", "  클라이언트가 연결되면 여기에 로그가 찍힙니다");
 
     while (running_.load()) {
-        zmq::message_t event_msg;
-        zmq::recv_result_t result;
+        bool event_received = false;
 
-        {
-            std::lock_guard<std::mutex> lock(socket_mutex_);
-            if (!socket_ || !running_.load()) break;  // ← running_ 체크 추가
-            result = socket_->recv(event_msg, zmq::recv_flags::dontwait);
-        }
+        // ★ 변경: 각 카메라의 소켓을 순회하며 이벤트 감지
+        for (int i = 0; i < max_cameras_; i++) {
+            zmq::message_t event_msg;
+            zmq::recv_result_t result;
 
-        if (!result.has_value()) {
-            // ★ sleep을 짧게 줄여서 종료 신호를 빨리 감지
-            std::this_thread::sleep_for(std::chrono::milliseconds(50));  // 100 → 50
-            continue;
-        }
-
-        if (event_msg.size() < 1) continue;
-
-        //----------------------------------------------------------------------
-        // XPUB 이벤트 파싱
-        // 첫 바이트: 0x01 = 구독, 0x00 = 구독해제
-        // 나머지: 토픽 이름 (예: "cam0")
-        //----------------------------------------------------------------------
-        const uint8_t* data = static_cast<const uint8_t*>(event_msg.data());
-        bool is_subscribe = (data[0] == 1);
-        std::string topic(
-            reinterpret_cast<const char*>(data + 1),
-            event_msg.size() - 1
-        );
-
-        int new_count = 0;
-        {
-            std::lock_guard<std::mutex> lock(subscribers_mutex_);
-            if (is_subscribe) {
-                topic_subscribers_[topic]++;
+            {
+                std::lock_guard<std::mutex> lock(socket_mutex_);
+                if (!sockets_[i] || !running_.load()) continue;
+                // dontwait으로 설정되어 있으므로 즉시 결과 반환
+                result = sockets_[i]->recv(event_msg, zmq::recv_flags::dontwait);
             }
-            else {
-                if (topic_subscribers_[topic] > 0)
-                    topic_subscribers_[topic]--;
-            }
-            new_count = topic_subscribers_[topic];
-        }
 
-        if (is_subscribe) {
-            log("INFO", "");
-            log("INFO", "========================================");
-            log("INFO", "★ 클라이언트 구독 연결!");
-            log("INFO", "  토픽: \"" + topic + "\"");
-            log("INFO", "  현재 구독자 수: " + std::to_string(new_count) + "명");
+            if (result.has_value() && event_msg.size() >= 1) {
+                event_received = true;
 
-            // 해당 카메라 활성화 상태 확인
-            for (int i = 0; i < max_cameras_; i++) {
-                std::string cam_topic = "cam" + std::to_string(i);
-                if (topic == cam_topic) {
+                // --- XPUB 이벤트 파싱 ---
+                const uint8_t* data = static_cast<const uint8_t*>(event_msg.data());
+                bool is_subscribe = (data[0] == 1);
+                std::string topic(
+                    reinterpret_cast<const char*>(data + 1),
+                    event_msg.size() - 1
+                );
+
+                int new_count = 0;
+                {
+                    std::lock_guard<std::mutex> lock(subscribers_mutex_);
+                    if (is_subscribe) {
+                        topic_subscribers_[topic]++;
+                    }
+                    else {
+                        if (topic_subscribers_[topic] > 0)
+                            topic_subscribers_[topic]--;
+                    }
+                    new_count = topic_subscribers_[topic];
+                }
+
+                if (is_subscribe) {
+                    log("INFO", "");
+                    log("INFO", "========================================");
+                    log("INFO", "★ 클라이언트 구독 연결 (포트 " + std::to_string(port_ + i) + ")!");
+                    log("INFO", "  토픽: \"" + topic + "\"");
+                    log("INFO", "  현재 구독자 수: " + std::to_string(new_count) + "명");
+
                     bool enabled = is_camera_enabled(i);
                     log("INFO", "  CAM" + std::to_string(i) +
                         " 스트리밍 상태: " + (enabled ? "활성화(영상 전송 중)" : "★ 비활성화(영상 안 보냄)"));
                     if (!enabled) {
-                        log("WARN", "  → enable_camera(" + std::to_string(i) +
-                            ") 가 호출되지 않았습니다");
+                        log("WARN", "  → enable_camera(" + std::to_string(i) + ") 가 호출되지 않았습니다");
                     }
+                    log("INFO", "========================================");
+                    log("INFO", "");
+                }
+                else {
+                    log("INFO", "★ 클라이언트 구독 해제: \"" + topic +
+                        "\" (남은 구독자: " + std::to_string(new_count) + "명)");
                 }
             }
-            log("INFO", "========================================");
-            log("INFO", "");
         }
-        else {
-            log("INFO", "★ 클라이언트 구독 해제: \"" + topic +
-                "\" (남은 구독자: " + std::to_string(new_count) + "명)");
+
+        // 이벤트가 없었다면 CPU 점유율을 낮추기 위해 짧게 휴식
+        if (!event_received) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
         }
     }
     log("INFO", "구독자 감시 스레드 종료");
 }
 
 //==============================================================================
-// 통계 로그 스레드
+// 통계 로그 스레드 (기존 로직 유지)
 //==============================================================================
 
 void StreamSender::stats_loop() {
-    log("INFO", "통계 로그 스레드 시작 (주기: " +
-        std::to_string(STATS_INTERVAL_SEC) + "초)");
+    log("INFO", "통계 로그 스레드 시작 (주기: " + std::to_string(STATS_INTERVAL_SEC) + "초)");
 
     while (running_.load()) {
         std::this_thread::sleep_for(std::chrono::seconds(1));
@@ -300,12 +287,10 @@ void StreamSender::stats_loop() {
             now - last_stats_time_).count();
 
         if (elapsed_sec < STATS_INTERVAL_SEC) continue;
-
         double duration = static_cast<double>(elapsed_sec);
 
         log("INFO", "");
-        log("INFO", "========== 스트리밍 현황 (" +
-            std::to_string(elapsed_sec) + "초 기준) ==========");
+        log("INFO", "========== 스트리밍 현황 (" + std::to_string(elapsed_sec) + "초 기준) ==========");
 
         bool any_active = false;
         for (int i = 0; i < max_cameras_; i++) {
@@ -327,7 +312,7 @@ void StreamSender::stats_loop() {
                 std::string bw = format_bandwidth(delta_bytes, duration);
 
                 std::ostringstream oss;
-                oss << "CAM" << i << ": ";
+                oss << "CAM" << i << " (포트 " << (port_ + i) << "): ";
                 oss << (enabled ? "★활성" : " 비활성");
                 oss << " | 구독자: " << subs << "명";
                 oss << " | " << std::fixed << std::setprecision(1) << fps << "fps";
@@ -353,7 +338,6 @@ void StreamSender::stats_loop() {
 
         last_stats_time_ = now;
     }
-
     log("INFO", "통계 로그 스레드 종료");
 }
 
@@ -375,12 +359,10 @@ void StreamSender::send_loop() {
             local_skip++;
             skip_count_++;
 
-            // 스킵 처음 발생 시 + 1000번마다 경고
             if (local_skip == 1 || local_skip % 1000 == 0) {
                 log("WARN", "★ CAM" + std::to_string(frame.camera_id) +
                     " 프레임 스킵 (비활성화) - 누적 " + std::to_string(local_skip) + "회");
-                log("WARN", "  구독자: " +
-                    std::to_string(get_subscriber_count(frame.camera_id)) + "명");
+                log("WARN", "  구독자: " + std::to_string(get_subscriber_count(frame.camera_id)) + "명");
             }
             continue;
         }
@@ -392,7 +374,6 @@ void StreamSender::send_loop() {
                 camera_sent_counts_[frame.camera_id]++;
             }
 
-            // 첫 프레임 전송 시 로그
             if (local_sent == 1) {
                 log("INFO", "★ 첫 번째 프레임 전송 성공!");
                 log("INFO", "  CAM" + std::to_string(frame.camera_id) +
@@ -417,7 +398,7 @@ bool StreamSender::send_frame(const FrameData& frame) {
         }
 
         //----------------------------------------------------------------------
-        // 2. 헤더 조립
+        // 2. 헤더 조립 (기존 규격 유지)
         //----------------------------------------------------------------------
         ViewerPacketHeader header{};
         header.camera_id = static_cast<uint8_t>(frame.camera_id);
@@ -427,50 +408,41 @@ bool StreamSender::send_frame(const FrameData& frame) {
         header.timestamp_ms = static_cast<uint64_t>(frame.timestamp_ms);
         header.width = STREAM_WIDTH;
         header.height = STREAM_HEIGHT;
-        header.jpeg_size = static_cast<uint32_t>(jpeg_buffer.size());
+
         std::string topic = "cam" + std::to_string(frame.camera_id);
 
         //----------------------------------------------------------------------
-        // 3. multipart 전송
-        //
-        // ★ 핵심: 중간 실패 시 빈 메시지로 multipart 강제 마무리
-        //    → 불완전 메시지가 다음 프레임 토픽에 붙는 현상 방지
-        //
-        // multipart 구조:
-        //   [Part 1] 토픽    (예: "cam0")
-        //   [Part 2] 헤더    (20B 고정)
-        //   [Part 3] 페이로드 (JPEG)
+        // 3. multipart 전송 (다중 포트 및 SNDMORE 꼬임 방어 적용)
         //----------------------------------------------------------------------
         std::lock_guard<std::mutex> lock(socket_mutex_);
-        if (!socket_) return false;
 
-        // Part 1: 토픽
+        // ★ 핵심: 프레임의 카메라 ID에 맞는 전용 소켓 포인터 획득
+        if (frame.camera_id >= max_cameras_ || !sockets_[frame.camera_id]) return false;
+        zmq::socket_t* target_socket = sockets_[frame.camera_id].get();
+
+        const auto flags_more = zmq::send_flags::sndmore | zmq::send_flags::dontwait;
+        const auto flags_end = zmq::send_flags::dontwait;
+
+        // [Part 1] 토픽
         zmq::message_t topic_msg(topic.data(), topic.size());
-        auto r1 = socket_->send(topic_msg, zmq::send_flags::sndmore);
-        if (!r1.has_value()) {
-            // ★ 토픽 전송 실패 → 불완전 메시지 없음, 그냥 드롭
-            return false;
-        }
+        auto r1 = target_socket->send(topic_msg, flags_more);
+        if (!r1.has_value()) return false;
 
-        // Part 2: 헤더
+        // [Part 2] 헤더
         zmq::message_t header_msg(&header, sizeof(ViewerPacketHeader));
-        auto r2 = socket_->send(header_msg, zmq::send_flags::sndmore);
+        auto r2 = target_socket->send(header_msg, flags_more);
         if (!r2.has_value()) {
-            // ★ 헤더 전송 실패
-            // 토픽은 이미 전송됨 → 빈 메시지로 multipart 강제 종료
-            // 이렇게 하지 않으면 다음 프레임의 헤더가 이전 토픽에 붙음
             zmq::message_t empty_msg(0);
-            socket_->send(empty_msg, zmq::send_flags::none);  // 에러 무시
+            target_socket->send(empty_msg, flags_end);
+            log("WARN", "버퍼 포화로 헤더 전송 실패. 소켓 상태(Flush) 초기화 완료.");
             return false;
         }
 
-        // Part 3: 페이로드
+        // [Part 3] 페이로드
         zmq::message_t payload_msg(jpeg_buffer.data(), jpeg_buffer.size());
-        auto r3 = socket_->send(payload_msg, zmq::send_flags::none);
+        auto r3 = target_socket->send(payload_msg, flags_end);
         if (!r3.has_value()) {
-            // ★ 페이로드 전송 실패
-            // 토픽 + 헤더는 이미 전송됨 → 이 경우 multipart는 자동 완료됨
-            // (마지막 파트이므로 sndmore 플래그가 없어 ZMQ가 메시지 경계 인식)
+            log("WARN", "버퍼 포화로 페이로드 전송 실패.");
             return false;
         }
 
@@ -480,6 +452,17 @@ bool StreamSender::send_frame(const FrameData& frame) {
         if (is_valid_camera_id(frame.camera_id)) {
             uint64_t total = topic.size() + sizeof(ViewerPacketHeader) + jpeg_buffer.size();
             camera_sent_bytes_[frame.camera_id] += total;
+        }
+
+        // =====================================================================
+        // ★ 추가: 듀얼 포트 정상 발송 확인 로그 (100프레임마다 1번씩 출력)
+        // =====================================================================
+        if (frame.frame_id % 100 == 0) {
+            uint16_t target_port = port_ + frame.camera_id; // 예: 7000 + 0, 7000 + 1
+            log("INFO", "★ [전송 확인] CAM" + std::to_string(frame.camera_id) +
+                " -> 포트 " + std::to_string(target_port) +
+                " 정상 발송 (frame_id=" + std::to_string(frame.frame_id) +
+                ", 크기=" + std::to_string(jpeg_buffer.size() / 1024) + " KB)");
         }
 
         return true;

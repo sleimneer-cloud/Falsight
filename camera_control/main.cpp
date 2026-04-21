@@ -53,7 +53,7 @@ namespace Config {
     constexpr const char* DEFAULT_AI_SERVER_IP = "10.10.10.110";
     constexpr const char* DEFAULT_MAIN_SERVER_IP = "10.10.10.103";
     constexpr uint16_t AI_SERVER_PORT = 9001;
-    constexpr uint16_t STREAM_PORT = 9002;
+    constexpr uint16_t STREAM_PORT = 7000;
     constexpr uint16_t CONTROL_PORT = 9000;
     constexpr uint16_t HTTP_PORT = 8080;
     constexpr uint16_t MAIN_SERVER_PORT = 80;

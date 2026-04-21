@@ -201,20 +201,26 @@ void CameraManager::capture_loop() {
             running_ = false;
             return;
         }
+
+        // =====================================================================
+        // ★ C26800 경고 해결: move 하기 전에 로그에 쓸 값을 미리 안전하게 복사해 둡니다.
+        // =====================================================================
+        uint32_t current_frame_id = fd.frame_id;
+
+        // 이제 큐로 소유권을 완전히 넘깁니다. (이후부터 fd는 접근 금지!)
         queue_.push(std::move(fd));
 
         //----------------------------------------------------------------------
         // 2-7: 주기적 상태 로그 (100프레임마다 ≈ 6.7초)
         //----------------------------------------------------------------------
-        if (fd.frame_id % 100 == 0) {
-            log("INFO", "프레임 " + std::to_string(fd.frame_id) +
+        // fd.frame_id 대신 미리 복사해둔 current_frame_id를 사용합니다.
+        if (current_frame_id % 100 == 0) {
+            log("INFO", "프레임 " + std::to_string(current_frame_id) +
                 " 처리 완료 (모션: " + (has_motion ? "O" : "X") + ")");
         }
     }
-
     log("INFO", "캡처 루프 정상 종료");
 }
-
 //==============================================================================
 // 내부 메서드 - 카메라 연결
 //==============================================================================
@@ -222,7 +228,8 @@ void CameraManager::capture_loop() {
 bool CameraManager::try_connect() {
     log("INFO", "카메라 연결 시도 중...");
 
-    if (!capture_.open(camera_id_, cv::CAP_DSHOW)) {
+    if (!capture_.open(camera_id_, cv::CAP_MSMF)) {
+
         log("ERROR", "카메라 열기 실패 (device " + std::to_string(camera_id_) + ")");
         return false;
     }
