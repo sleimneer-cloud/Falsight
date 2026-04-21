@@ -1,5 +1,7 @@
 import asyncio
+import os
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
 from contextlib import asynccontextmanager
 
 from database.database import engine
@@ -29,6 +31,10 @@ async def lifespan(app: FastAPI):
     print("⚠️  [DB 연결 종료] 안전하게 데이터베이스 커넥션 풀이 해제되었습니다.")
 
 app = FastAPI(lifespan=lifespan)
+
+# [중요] Video 물리적 경로 생성 및 웹 정적 파일 제공 경로 마운트
+os.makedirs("./storage", exist_ok=True)
+app.mount("/storage", StaticFiles(directory="./storage"), name="storage")
 
 # 라우터 등록 (HTTP / WebSocket 분리)
 app.include_router(api_router.router)

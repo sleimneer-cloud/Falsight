@@ -1,18 +1,20 @@
 import time
-from fastapi import APIRouter, BackgroundTasks, Depends
+from fastapi import APIRouter, BackgroundTasks, Depends, UploadFile, File, Form
+from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from schemas.fall import FallEventRequest
 from database.database import get_db
-from database.repository import FallEventRepository
+from database.repository import FallEventRepository, VideoEvidenceRepository
 from services.event_service import EventService
 
 router = APIRouter()
 
 # Dependency Injection (DI) 체인: Session -> Repository -> Service
 def get_event_service(db: AsyncSession = Depends(get_db)) -> EventService:
-    repo = FallEventRepository(db)
-    return EventService(repo)
+    fall_repo = FallEventRepository(db)
+    video_repo = VideoEvidenceRepository(db)
+    return EventService(fall_repo, video_repo)
 
 @router.post("/api/fall-event")
 async def receive_fall_event(
@@ -36,3 +38,46 @@ async def receive_fall_event(
     background_tasks.add_task(service.send_record_command, new_event_id, request_data.camera_id)
 
     return {"status": "received", "event_id": new_event_id}
+
+@router.post("/video/upload")
+async def upload_video(
+    video_file: UploadFile = File(...),
+    node_id: str = Form(None),
+    camera_id: int = Form(...),
+    event_time: str = Form(...),
+    clip_start: str = Form(...),
+    clip_end: str = Form(...),
+    fall_id: int = Form(...),
+    service: EventService = Depends(get_event_service)
+):
+    print(f"📥 [영상 수신 시작] Camera: {camera_id}, Fall ID: {fall_id}")
+    
+    try:
+        virtual_path, file_size = await service.process_video_upload(
+            video_file=video_file,
+            fall_id=fall_id,
+            camera_id=camera_id,
+            clip_start=clip_start,
+            clip_end=clip_end
+        )
+        print(f"✅ [영상 수신 완료] 경로: {virtual_path}, 크기: {file_size} bytes")
+
+        return JSONResponse(
+            status_code=200,
+            content={
+                "status": "success",
+                "file_path": virtual_path,
+                "file_size": file_size
+            }
+        )
+    except Exception as e:
+        print(f"❌ [영상 수신 에러] {e}")
+        return JSONResponse(
+            status_code=500,
+            content={
+                "status": "error",
+                "code": "INTERNAL_ERROR",
+                "message": str(e)
+            }
+        )
+
