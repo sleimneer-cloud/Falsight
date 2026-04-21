@@ -8,7 +8,7 @@ Falsight AI 서버 전체 설정값 중앙 관리
 """
 
 # ── 모델 설정
-MODEL_PATH    = "models/fallvision_best_model_v9.pt"
+MODEL_PATH    = "models/fallvision_best_model_v11.pt"
 N_FEATURES    = 34        # COCO 17관절 × (x, y) = 34피처
 USE_MEDIAPIPE = False     # YOLO11 Pose 사용
 
@@ -35,7 +35,10 @@ AI_RESOLUTION = (640, 480)   # Node1 전송 해상도 확정값
 INFERENCE_TIMEOUT_MS = 300   # 추론 제한 시간 (ms)
 
 # ── 알람 중복 방지
-ALARM_COOLDOWN_SEC = 30      # 동일 camera_id 재알람 대기 시간
+ALARM_COOLDOWN_SEC = 20      # 동일 camera_id 재알람 대기 시간
+
+# ── 디버그 설정
+DEBUG_SAVE_FRAMES = True   # 운영 시 False로 변경
 
 # ── ZMQ 수신
 # AI 서버가 bind -> Node1이 connect
