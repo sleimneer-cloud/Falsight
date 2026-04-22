@@ -107,7 +107,7 @@ class SimpleTracker:
 
         return result
 
-    # ── 내부 메서드 ──────────────────────────────────────────
+    # 내부 메서드
 
     def _register_all(self, detections: list) -> list:
         result = []

@@ -4,7 +4,6 @@ ai_server.py
 Falsight AI 서버 메인 진입점
 
 현재 상태:
-    C++ 서버 연동 전 → 더미 프레임으로 내부 로직 테스트
     ZMQ 수신부 주석 해제 시 실제 서버 모드로 전환
 
 실행:
@@ -24,7 +23,7 @@ from config import (
     ZMQ_HOST, ZMQ_PORT
 )
 
-# ── 로깅 설정 ─────────────────────────────────────────────────
+# 로깅 설정
 logging.basicConfig(
     level=logging.DEBUG,
     format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
@@ -36,7 +35,7 @@ logging.basicConfig(
 logger = logging.getLogger("AIServer")
 
 
-# ── 더미 수신 프로세스 (C++ 연동 전 테스트용) ────────────────
+# 더미 수신 프로세스 (C++ 연동 전 테스트용)
 def dummy_receiver(frame_queues: dict):
     """
     C++ 연동 전 더미 프레임으로 내부 로직 테스트
@@ -66,7 +65,7 @@ def dummy_receiver(frame_queues: dict):
         time.sleep(1 / 30)
 
 
-# ── ZMQ 수신 프로세스 (C++ 연동 후 활성화) ───────────────────
+# ZMQ 수신 프로세스 (C++ 연동 후 활성화)
 def zmq_receiver(frame_queues: dict):
     """
     Node1 C++ 서버에서 ZMQ PUSH로 프레임 수신
@@ -103,19 +102,19 @@ def zmq_receiver(frame_queues: dict):
                 message = parts[0] + parts[1]  # 헤더 + 페이로드 합치기
             else:
                 continue
-            # ── 검증 1단계: 최소 크기 ────────────────────────
+            #  검증 1단계: 최소 크기
             if len(message) < 20:
                 log.warning("[ZMQ] 메시지 너무 짧음 → 스킵")
                 continue
 
-            # ── 헤더 파싱 (20바이트) ─────────────────────────
+            # 헤더 파싱 (20바이트)
             camera_id = message[0]                                # 1B: 0~3
             # padding = message[1:4]                              # 3B: 무시
             timestamp = struct.unpack_from("<Q", message, 4)[0]  # 8B
             frame_id  = struct.unpack_from("<I", message, 12)[0] # 4B
             jpeg_size = struct.unpack_from("<I", message, 16)[0] # 4B
 
-            # ── 검증 2단계: 페이로드 크기 일치 ──────────────
+            # 검증 2단계: 페이로드 크기 일치
             payload = message[20:]
             if len(payload) != jpeg_size:
                 log.warning(
@@ -124,19 +123,19 @@ def zmq_receiver(frame_queues: dict):
                 )
                 continue
 
-            # ── 검증 3단계: JPEG 마커 확인 ───────────────────
+            # 검증 3단계: JPEG 마커 확인
             if not (payload[:2] == b'\xff\xd8' and payload[-2:] == b'\xff\xd9'):
                 log.warning("[ZMQ] JPEG 마커 불일치 → 스킵")
                 continue
 
-            # ── JPEG 디코딩 ───────────────────────────────────
+            # JPEG 디코딩
             nparr = np.frombuffer(payload, np.uint8)
             frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
             if frame is None:
                 log.warning("[ZMQ] JPEG 디코딩 실패 → 스킵")
                 continue
 
-            # ── camera_id 보정 (0-indexed → 1-indexed) ───────
+            # camera_id 보정 (0-indexed → 1-indexed)
             camera_id = int(camera_id) + 1  # 0~3 → 1~4
 
             meta = {
@@ -156,7 +155,7 @@ def zmq_receiver(frame_queues: dict):
             continue
 
 
-# ── 메인 ─────────────────────────────────────────────────────
+# 메인
 def main():
     logger.info("=" * 50)
     logger.info("Falsight AI 서버 시작")
@@ -168,7 +167,7 @@ def main():
 
     processes = []
 
-    # ① 워커 프로세스 (카메라별 1개)
+    # 워커 프로세스 (카메라별 1개)
     from modules.worker_process import worker_process
     for cam_id in CAMERA_IDS:
         p = mp.Process(
@@ -181,7 +180,7 @@ def main():
         processes.append(p)
         logger.info(f"[Main] Worker cam{cam_id} 시작 (PID={p.pid})")
 
-    # ② 알람 프로세스
+    # 알람 프로세스
     from modules.alarm_process import alarm_process
     alarm_p = mp.Process(
         target=alarm_process,
@@ -193,7 +192,7 @@ def main():
     processes.append(alarm_p)
     logger.info(f"[Main] AlarmProcess 시작 (PID={alarm_p.pid})")
 
-    # ③ 수신 프로세스
+    # 수신 프로세스
     # C++ 연동 전: USE_DUMMY = True  (더미 프레임으로 테스트)
     # C++ 연동 후: USE_DUMMY = False (ZMQ 실제 수신)
     USE_DUMMY = False
@@ -211,7 +210,7 @@ def main():
     processes.append(receiver_p)
     logger.info(f"[Main] {receiver_name} 시작 (PID={receiver_p.pid})")
 
-    # ── 종료 핸들러 ──────────────────────────────────────────
+    # 종료 핸들러
     def shutdown(signum, frame):
         logger.info("[Main] 종료 신호 수신 → 프로세스 정리 중...")
         for cam_id in CAMERA_IDS:

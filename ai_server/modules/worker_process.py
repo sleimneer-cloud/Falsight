@@ -44,7 +44,7 @@ def worker_process(
 
     while True:
         try:
-            # ① 프레임 수신 (1초 대기)
+            # 프레임 수신 (1초 대기)
             item = frame_queue.get(timeout=1.0)
 
             if item is None:
@@ -61,10 +61,10 @@ def worker_process(
             # 원본 프레임 저장 (디버그)
             debug.save_raw(frame)
 
-            # ② Keypoint 추출
+            # Keypoint 추출
             detections, raw_det, kp_data, kp_conf = extractor.extract(frame)
 
-            # ③ 하체 감지 여부 계산 (디버그 오버레이용)
+            # 하체 감지 여부 계산 (디버그 오버레이용)
             lower_ok_flags = []
             if kp_data is not None and len(kp_data) > 0:
                 for i in range(len(kp_data)):
@@ -74,10 +74,10 @@ def worker_process(
             # AI 시점 오버레이 저장 (디버그)
             debug.save_ai_view(frame, raw_det, kp_data, kp_conf, lower_ok_flags)
 
-            # ④ ByteTrack 추적
+            # ByteTrack 추적
             tracks = tracker.update(detections)
 
-            # ⑤ 슬라이딩 윈도우 버퍼 + LSTM 추론
+            # 슬라이딩 윈도우 버퍼 + LSTM 추론
             for track in tracks:
                 track_id  = track["track_id"]
                 keypoints = track["keypoints"]
@@ -88,7 +88,7 @@ def worker_process(
                 if buffer is None:
                     continue  # 아직 버퍼 부족
 
-                # ⑥ LSTM 추론
+                # LSTM 추론
                 result = detector.predict(buffer)
 
                 if result is None:
@@ -102,7 +102,7 @@ def worker_process(
                     f"track={track_id} → {label} ({confidence:.3f})"
                 )
 
-                # ⑦ 자동 저장 (FALL / UNCERTAIN)
+                # 자동 저장 (FALL / UNCERTAIN)
                 if label in [RESULT_FALL, RESULT_UNCERTAIN]:
                     saver.save(
                         label=label,
@@ -112,7 +112,7 @@ def worker_process(
                         confidence=confidence
                     )
 
-                # ⑧ FALL이면 Result Queue로 전달
+                # FALL이면 Result Queue로 전달
                 if label == RESULT_FALL:
                     result_queue.put({
                         "camera_id":  camera_id,
