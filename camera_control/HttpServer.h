@@ -4,22 +4,22 @@
  * @brief Main Server 명령 수신 및 클립 업로드 담당
  *
  * 클립 추출 방식:
- * - fall_time 기준으로 앞 half_duration, 뒤 half_duration 추출
- * - 파일 경계 걸리면 이전 파일과 concat 후 추출
- * - fMP4 포맷 출력 (쓰는 중에도 읽기 가능, 스트리밍 호환)
+ * - fall_time 기준 이전 duration초만 추출 (낙상 전 영상)
+ * - 현재 녹화 중인 파일도 추출 가능 (analyzeduration/probesize 옵션)
+ * - 두 파일 concat 제거 (단순화)
  *
  * API 규격:
  * [수신] POST /api/edge/record
  *   요청: {
  *     "fall_id"  : 104,
  *     "cam_id"   : 2,
- *     "duration" : 240,            ← 총 클립 길이 (초), 기본 4분
+ *     "duration" : 30,             ← 낙상 전 클립 길이 (초)
  *     "fall_time": 1734567890000   ← 낙상 발생 시간 (Unix ms)
  *   }
  *   응답: { "status": "success", "message": "recording started", "fall_id": 104 }
  *
  * [송신] POST http://{MainServer}/video/upload (multipart/form-data)
- *   전송: video_file(fMP4) + metadata JSON
+ *   전송: video_file(MP4) + metadata JSON
  */
 
 #ifndef HTTP_SERVER_H
@@ -39,11 +39,11 @@
   * @brief 클립 추출 요청 데이터
   */
 struct ClipRequest {
-    int     fall_id;          // 낙상 이벤트 ID
-    int     camera_id;        // 카메라 번호
-    int     duration;         // 총 클립 길이 (초), 기본 240 = 4분
-    int64_t request_time;     // 요청 수신 시간 (Unix ms)
-    int64_t fall_time;        // ★ 낙상 발생 시간 (Unix ms) - 클립 기준점
+    int     fall_id;       // 낙상 이벤트 ID
+    int     camera_id;     // 카메라 번호
+    int     duration;      // 낙상 전 클립 길이 (초)
+    int64_t request_time;  // 요청 수신 시간 (Unix ms)
+    int64_t fall_time;     // 낙상 발생 시간 (Unix ms) - 클립 끝점
 };
 
 /**
@@ -93,17 +93,16 @@ private:
 
     /**
      * @brief 클립 추출 메인
-     *        fall_time 기준 앞뒤 half_duration 추출
-     *        파일 경계 시 두 파일 concat 후 추출
+     *        fall_time 기준 이전 duration초 추출
      */
     std::string extract_clip(const ClipRequest& request);
 
     /**
-     * @brief 단일 파일에서 클립 추출 (fMP4)
-     * @param source     원본 파일 경로
-     * @param seek_sec   파일 내 시작 위치 (초)
-     * @param duration   추출 길이 (초)
-     * @param output     출력 파일 경로
+     * @brief 단일 파일에서 클립 추출
+     * @param source    원본 파일 경로
+     * @param seek_sec  파일 내 시작 위치 (초)
+     * @param duration  추출 길이 (초)
+     * @param output    출력 파일 경로
      */
     std::string extract_single_file(const std::string& source,
         int seek_sec,
@@ -111,36 +110,15 @@ private:
         const std::string& output);
 
     /**
-     * @brief 두 파일 concat 후 클립 추출 (파일 경계 처리, fMP4)
-     * @param file1      이전 시간 파일 (예: 14시.mp4)
-     * @param file2      현재 시간 파일 (예: 15시.mp4)
-     * @param seek_sec   file1 기준 시작 위치 (초)
-     * @param duration   추출 길이 (초)
-     * @param output     출력 파일 경로
-     * @param temp_dir   임시 파일 저장 디렉토리
-     */
-    std::string extract_two_files(const std::string& file1,
-        const std::string& file2,
-        int seek_sec,
-        int duration,
-        const std::string& output,
-        const std::string& temp_dir);
-
-    /**
      * @brief 파일명(YYYYMMDD_HH.mp4) 기준으로 seek 위치 계산
-     * @param filepath       파일 전체 경로
-     * @param fall_time      낙상 발생 시간 (Unix ms)
-     * @param half_duration  클립 절반 길이 (초)
-     * @return seek 초 (음수 = 이전 파일에 걸침)
+     * @param filepath   파일 전체 경로
+     * @param fall_time  낙상 발생 시간 (Unix ms)
+     * @param duration   클립 길이 (초) - fall_time 기준 앞으로
+     * @return seek 초 (음수 = 파일 시작보다 앞 → 0으로 처리)
      */
     int calculate_seek_seconds(const std::string& filepath,
         int64_t fall_time,
-        int half_duration) const;
-
-    /**
-     * @brief 이전 시간대 파일 찾기 (fall_time 기준 1시간 전)
-     */
-    std::string find_prev_recording_file(int camera_id, int64_t fall_time) const;
+        int duration) const;
 
     /**
      * @brief 해당 시간대 파일 찾기
@@ -157,7 +135,7 @@ private:
     //--------------------------------------------------------------------------
     void log(const std::string& level, const std::string& message) const;
     static std::string get_iso_timestamp();
-    static std::string ms_to_iso(int64_t timestamp_ms);  // Unix ms → ISO 8601
+    static std::string ms_to_iso(int64_t timestamp_ms);
     static int64_t now_ms();
 
     //--------------------------------------------------------------------------
@@ -184,27 +162,18 @@ private:
 
     //--------------------------------------------------------------------------
     // 상수
+    // ★ 낙상 전 영상만 추출 (duration = 클립 전체 길이)
     //--------------------------------------------------------------------------
 
-    // =========================================================================
-    // ★ 클립 시간 설정 (테스트 / 운영 전환)
-    //
-    // [운영 모드] 낙상 전후 각 2분 = 총 4분 (120초 앞 + 120초 뒤)
-    // → 아래 TEST 블록을 주석 처리하고 PRODUCTION 블록 주석 해제
-    //
-    // [테스트 모드] 낙상 전후 각 15초 = 총 30초 (15초 앞 + 15초 뒤)
-    // → 아래 TEST 블록 주석 해제하고 PRODUCTION 블록 주석 처리
-    // =========================================================================
+    // ---- 테스트 모드 ----
+    static constexpr int DEFAULT_CLIP_DURATION = 30;   // 낙상 전 30초
+    static constexpr int MAX_CLIP_DURATION = 120;  // 최대 2분
+    static constexpr int UPLOAD_TIMEOUT_SEC = 30;   // 업로드 타임아웃
 
-    // ---- 테스트 모드 (더미 데이터 검증용, 총 30초) ----
-    static constexpr int DEFAULT_CLIP_DURATION = 30;   // 테스트: 앞 15초 + 뒤 15초
-    static constexpr int MAX_CLIP_DURATION = 60;   // 테스트: 최대 1분
-    static constexpr int UPLOAD_TIMEOUT_SEC = 10;   // 테스트: 타임아웃 10초
-
-    // ---- 운영 모드 (실제 낙상 감지, 총 4분) ----
-    // static constexpr int DEFAULT_CLIP_DURATION = 240;  // 운영: 앞 2분 + 뒤 2분
-    // static constexpr int MAX_CLIP_DURATION     = 600;  // 운영: 최대 10분
-    // static constexpr int UPLOAD_TIMEOUT_SEC    = 60;   // 운영: 타임아웃 60초
+    // ---- 운영 모드 ----
+    // static constexpr int DEFAULT_CLIP_DURATION = 120;  // 낙상 전 2분
+    // static constexpr int MAX_CLIP_DURATION     = 600;  // 최대 10분
+    // static constexpr int UPLOAD_TIMEOUT_SEC    = 60;   // 업로드 타임아웃
 };
 
 #endif // HTTP_SERVER_H

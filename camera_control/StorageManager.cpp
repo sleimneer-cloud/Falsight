@@ -1,7 +1,13 @@
 /**
  * @file StorageManager.cpp
  * @brief StorageManager 클래스 구현
+ *
+ * 저장 방식 변경:
+ * - OpenCV VideoWriter (mp4v) → ffmpeg 파이프 (fMP4)
+ * - fMP4: 녹화 중에도 ffmpeg으로 읽기 가능 (moov atom 불필요)
+ * - movflags: frag_keyframe+empty_moov → 실시간 클립 추출 가능
  */
+
 #define _CRT_SECURE_NO_WARNINGS
 #include "PacketHeader.h"
 #include "StorageManager.h"
@@ -11,6 +17,7 @@
 #include <algorithm>
 #include <filesystem>
 #include <chrono>
+#include <cstdio>
 
 namespace fs = std::filesystem;
 
@@ -27,19 +34,18 @@ StorageManager::StorageManager(int camera_id,
     , queue_(queue)
     , fps_(fps)
     , current_hour_(-1)
+    , pipe_(nullptr)
 {
-    // 저장 경로 생성: base_path/cam{N}
     std::ostringstream oss;
     oss << base_path_ << "/cam" << camera_id_;
     storage_path_ = oss.str();
 
-    log("INFO", "StorageManager 생성 (path=" + storage_path_ + ", fps=" + std::to_string(fps_) + ")");
+    log("INFO", "StorageManager 생성 (path=" + storage_path_ +
+        ", fps=" + std::to_string(fps_) + ")");
 }
 
 StorageManager::~StorageManager() {
-    if (running_.load()) {
-        stop();
-    }
+    if (running_.load()) stop();
     log("INFO", "StorageManager 소멸");
 }
 
@@ -74,12 +80,8 @@ void StorageManager::stop() {
     log("INFO", "종료 요청 수신");
     running_ = false;
 
-    // 스레드 종료 대기
-    if (worker_.joinable()) {
-        worker_.join();
-    }
+    if (worker_.joinable()) worker_.join();
 
-    // [중요] 비정상 종료를 막고 0초짜리 파일이 생성되는 것을 방지
     close_current_file();
 
     log("INFO", "=== 저장 통계 ===");
@@ -102,11 +104,9 @@ void StorageManager::storage_loop() {
     FrameData frame;
 
     while (queue_.pop(frame)) {
-        if (!running_.load()) {
-            break;
-        }
+        if (!running_.load()) break;
 
-        // 파일 분할 체크 (시간이 바뀌면 새 파일)
+        // 시간이 바뀌면 새 파일 생성
         if (need_new_file()) {
             close_current_file();
             if (!create_new_file()) {
@@ -115,13 +115,19 @@ void StorageManager::storage_loop() {
             }
         }
 
-        // 프레임 저장
+        // ★ ffmpeg 파이프로 raw BGR 프레임 전송
         {
             std::lock_guard<std::mutex> lock(writer_mutex_);
-            if (writer_.isOpened()) {
-                // 비어있는 프레임 방어 코드
-                if (!frame.resized.empty()) {
-                    writer_.write(frame.resized);
+            if (pipe_ && !frame.resized.empty()) {
+                // frame.resized는 640×480 BGR
+                size_t written = fwrite(
+                    frame.resized.data,
+                    1,
+                    frame.resized.total() * frame.resized.elemSize(),
+                    pipe_
+                );
+
+                if (written > 0) {
                     saved_count_++;
 
                     if (saved_count_.load() % 500 == 0) {
@@ -151,39 +157,65 @@ bool StorageManager::create_new_file() {
     std::string filename = generate_filename();
     std::string filepath = storage_path_ + "/" + filename;
 
-    log("INFO", "새 파일 생성 시도: " + filepath);
+    log("INFO", "새 fMP4 파일 생성 시도: " + filepath);
 
-    // 코덱 설정: MP4V
-    int fourcc = cv::VideoWriter::fourcc('m', 'p', '4', 'v');
+    // ★ ffmpeg 파이프로 fMP4 직접 저장
+    // frag_keyframe: 키프레임마다 fragment 생성
+    // empty_moov: 파일 시작에 빈 moov atom 삽입 → 녹화 중 읽기 가능
+    // default_base_moof: fragment 기준점 설정
+    std::ostringstream cmd;
+    cmd << "ffmpeg -y "
+        << "-f rawvideo "
+        << "-pixel_format bgr24 "
+        << "-video_size 640x480 "
+        << "-framerate " << fps_ << " "
+        << "-i pipe:0 "
+        << "-c:v libx264 "
+        << "-preset ultrafast "       // CPU 부하 최소화
+        << "-crf 28 "                 // 화질 (낮을수록 고화질, 높을수록 압축)
+        << "-movflags frag_keyframe+empty_moov+default_base_moof "
+        << "\"" << filepath << "\" "
+        << "2>nul";                   // Windows: 에러 출력 숨김
 
-    // [수정 완료] 해상도를 frame.resized 크기인 640x480으로 강제 고정하여 버리기 방지
-    bool opened = writer_.open(filepath, fourcc, fps_, cv::Size(640, 480), true);
+    log("INFO", "ffmpeg 명령: " + cmd.str());
 
-    if (!opened) {
-        log("ERROR", "VideoWriter 열기 실패 (경로 확인 필요): " + filepath);
+    pipe_ = _popen(cmd.str().c_str(), "wb");
+
+    if (!pipe_) {
+        log("ERROR", "★ ffmpeg 파이프 열기 실패: " + filepath);
+        log("ERROR", "  → ffmpeg이 PATH에 등록되어 있는지 확인");
         return false;
     }
 
     current_file_ = filename;
     file_count_++;
 
-    // [수정 완료] 스레드 안전한 현재 시간 가져오기
     auto now = std::chrono::system_clock::now();
     auto time_t_now = std::chrono::system_clock::to_time_t(now);
     struct tm tm_info;
     localtime_s(&tm_info, &time_t_now);
     current_hour_ = tm_info.tm_hour;
 
-    log("INFO", "VideoWriter 열기 성공 (hour=" + std::to_string(current_hour_) + ")");
+    log("INFO", "★ fMP4 저장 시작 (hour=" + std::to_string(current_hour_) +
+        ", file=" + filename + ")");
     return true;
 }
 
 void StorageManager::close_current_file() {
     std::lock_guard<std::mutex> lock(writer_mutex_);
 
-    if (writer_.isOpened()) {
-        writer_.release(); // 파일 메타데이터(moov)를 기록하고 닫음
-        log("INFO", "파일 닫기 완료 (정상 저장): " + current_file_);
+    if (pipe_) {
+        // ★ 파이프 닫기 → ffmpeg이 파일 정상 종료 (moov 기록)
+        int result = _pclose(pipe_);
+        pipe_ = nullptr;
+
+        if (result == 0) {
+            log("INFO", "★ fMP4 파일 닫기 완료 (정상 저장): " + current_file_);
+        }
+        else {
+            log("WARN", "ffmpeg 종료 코드: " + std::to_string(result) +
+                " (파일: " + current_file_ + ")");
+        }
     }
 
     current_file_.clear();
@@ -195,8 +227,6 @@ bool StorageManager::need_new_file() const {
 
     auto now = std::chrono::system_clock::now();
     auto time_t_now = std::chrono::system_clock::to_time_t(now);
-
-    // [수정 완료] 스레드 안전
     struct tm tm_info;
     localtime_s(&tm_info, &time_t_now);
 
@@ -206,8 +236,6 @@ bool StorageManager::need_new_file() const {
 std::string StorageManager::generate_filename() const {
     auto now = std::chrono::system_clock::now();
     auto time_t_now = std::chrono::system_clock::to_time_t(now);
-
-    // [수정 완료] 스레드 안전
     struct tm tm_info;
     localtime_s(&tm_info, &time_t_now);
 
@@ -231,7 +259,7 @@ bool StorageManager::ensure_directory() {
 }
 
 //==============================================================================
-// 내부 메서드 - 디스크 용량 관리 (오래된 파일 삭제)
+// 내부 메서드 - 디스크 용량 관리
 //==============================================================================
 
 void StorageManager::check_disk_space() {
@@ -240,7 +268,9 @@ void StorageManager::check_disk_space() {
         double used_ratio = 1.0 - (static_cast<double>(si.available) / si.capacity);
 
         if (used_ratio >= DISK_THRESHOLD) {
-            log("WARN", "디스크 사용량 " + std::to_string(static_cast<int>(used_ratio * 100)) + "% - 자동 정리 시작");
+            log("WARN", "디스크 사용량 " +
+                std::to_string(static_cast<int>(used_ratio * 100)) +
+                "% - 자동 정리 시작");
             delete_oldest_file();
         }
     }
@@ -264,7 +294,6 @@ void StorageManager::delete_oldest_file() {
             return;
         }
 
-        // 수정 시간 기준 정렬 (가장 오래된 것이 앞으로)
         std::sort(files.begin(), files.end(),
             [](const fs::directory_entry& a, const fs::directory_entry& b) {
                 return fs::last_write_time(a) < fs::last_write_time(b);
@@ -272,7 +301,7 @@ void StorageManager::delete_oldest_file() {
 
         for (const auto& file : files) {
             std::string filename = file.path().filename().string();
-            if (filename == current_file_) continue; // 현재 저장 중인 파일 보호
+            if (filename == current_file_) continue;
 
             fs::remove(file.path());
             log("INFO", "오래된 파일 자동 삭제 완료: " + filename);
@@ -294,7 +323,6 @@ void StorageManager::log(const std::string& level, const std::string& message) c
     auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
         now.time_since_epoch()) % 1000;
 
-    // [수정 완료] 스레드 안전
     struct tm tm_info;
     localtime_s(&tm_info, &time_t_now);
 
@@ -303,10 +331,6 @@ void StorageManager::log(const std::string& level, const std::string& message) c
         << '.' << std::setfill('0') << std::setw(3) << ms.count()
         << "[STORAGE][CAM" << camera_id_ << "][" << level << "] " << message;
 
-    if (level == "ERROR" || level == "WARN") {
-        std::cerr << oss.str() << std::endl;
-    }
-    else {
-        std::cout << oss.str() << std::endl;
-    }
+    if (level == "ERROR" || level == "WARN") std::cerr << oss.str() << std::endl;
+    else                                     std::cout << oss.str() << std::endl;
 }

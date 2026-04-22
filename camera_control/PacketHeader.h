@@ -74,11 +74,11 @@ namespace PacketConfig {
     constexpr uint16_t HTTP_PORT = 8080;            // HTTP 서버 포트
 
     // JPEG 설정
-    constexpr int JPEG_QUALITY = 85;             // JPEG 압축 품질
+    constexpr int JPEG_QUALITY = 60;             // JPEG 압축 품질
     constexpr int AI_WIDTH = 640;                // AI용 해상도
     constexpr int AI_HEIGHT = 480;
-    constexpr int VIEWER_WIDTH = 1920;           // 클라이언트용 해상도
-    constexpr int VIEWER_HEIGHT = 1080;
+    constexpr int VIEWER_WIDTH = 640;           // 클라이언트용 해상도
+    constexpr int VIEWER_HEIGHT = 480;
 
 
     // 버퍼 크기

@@ -26,19 +26,19 @@
 #include <string>
 #include <chrono>
 
-/**
- * @class CameraManager
- * @brief 단일 카메라의 캡처, 모션 감지, 큐 전달을 담당
- *
- * 사용 예시:
- * @code
- *   ThreadSafeQueue<FrameData> queue(30);
- *   CameraManager cam0(0, queue);
- *   cam0.start();
- *   // ... 작업 ...
- *   cam0.stop();
- * @endcode
- */
+ /**
+  * @class CameraManager
+  * @brief 단일 카메라의 캡처, 모션 감지, 큐 전달을 담당
+  *
+  * 사용 예시:
+  * @code
+  *   ThreadSafeQueue<FrameData> queue(30);
+  *   CameraManager cam0(0, queue);
+  *   cam0.start();
+  *   // ... 작업 ...
+  *   cam0.stop();
+  * @endcode
+  */
 class CameraManager {
 public:
     //--------------------------------------------------------------------------
@@ -172,8 +172,8 @@ private:
     //--------------------------------------------------------------------------
     // 상수
     //--------------------------------------------------------------------------
-    static constexpr int CAPTURE_WIDTH = 1920;  // 원본 해상도 가로
-    static constexpr int CAPTURE_HEIGHT = 1080;  // 원본 해상도 세로
+    static constexpr int CAPTURE_WIDTH = 640;  // 원본 해상도 가로
+    static constexpr int CAPTURE_HEIGHT = 480;  // 원본 해상도 세로
     static constexpr int RESIZED_WIDTH = 640;   // 리사이즈 해상도 가로
     static constexpr int RESIZED_HEIGHT = 480;   // 리사이즈 해상도 세로
     static constexpr int TARGET_FPS = 15;    // 목표 프레임레이트

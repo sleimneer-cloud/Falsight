@@ -193,7 +193,7 @@ int main(int argc, char* argv[]) {
     // 1. 큐 생성
     //--------------------------------------------------------------------------
     std::vector<std::unique_ptr<ThreadSafeQueue<FrameData>>> main_queues;
-    std::vector<std::unique_ptr<ThreadSafeQueue<FrameData>>> display_queues;
+    /*std::vector<std::unique_ptr<ThreadSafeQueue<FrameData>>> display_queues;*/
     std::vector<std::unique_ptr<ThreadSafeQueue<FrameData>>> storage_queues;
 
     ThreadSafeQueue<FrameData> shared_zmq_queue(Config::ZMQ_QUEUE_SIZE);
@@ -202,8 +202,8 @@ int main(int argc, char* argv[]) {
     for (int i = 0; i < Config::CAMERA_COUNT; i++) {
         main_queues.push_back(
             std::make_unique<ThreadSafeQueue<FrameData>>(Config::QUEUE_SIZE));
-        display_queues.push_back(
-            std::make_unique<ThreadSafeQueue<FrameData>>(Config::QUEUE_SIZE));
+        //display_queues.push_back(
+        //    std::make_unique<ThreadSafeQueue<FrameData>>(Config::QUEUE_SIZE));
         storage_queues.push_back(
             std::make_unique<ThreadSafeQueue<FrameData>>(Config::QUEUE_SIZE));
     }
@@ -337,8 +337,8 @@ int main(int argc, char* argv[]) {
 
             local_total++;
 
-            // 1. 디스플레이
-            display_queues[cam_index]->push(frame);
+            //// 1. 디스플레이
+            //display_queues[cam_index]->push(frame);
 
             // 2. 저장
             storage_queues[cam_index]->push(frame);
@@ -384,9 +384,9 @@ int main(int argc, char* argv[]) {
             log_main("카메라 " + std::to_string(Config::CAMERA_IDS[i]) + " 시작 실패");
     }
 
-    std::vector<ThreadSafeQueue<FrameData>*> display_queue_ptrs;
-    for (auto& q : display_queues) display_queue_ptrs.push_back(q.get());
-    threads.emplace_back(display_worker, std::ref(display_queue_ptrs));
+    //std::vector<ThreadSafeQueue<FrameData>*> display_queue_ptrs;
+    //for (auto& q : display_queues) display_queue_ptrs.push_back(q.get());
+   /* threads.emplace_back(display_worker, std::ref(display_queue_ptrs));*/
 
     for (int i = 0; i < Config::CAMERA_COUNT; i++)
         threads.emplace_back(distributor, i);
@@ -438,7 +438,7 @@ int main(int argc, char* argv[]) {
     log_main("카메라 중지 완료");
 
     // Step 4: 나머지 큐 shutdown
-    for (auto& q : display_queues) q->shutdown();
+    //for (auto& q : display_queues) q->shutdown();
     for (auto& q : storage_queues) q->shutdown();
     shared_zmq_queue.shutdown();
     shared_stream_queue.shutdown();

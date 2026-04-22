@@ -228,7 +228,7 @@ void CameraManager::capture_loop() {
 bool CameraManager::try_connect() {
     log("INFO", "카메라 연결 시도 중...");
 
-    if (!capture_.open(camera_id_, cv::CAP_MSMF)) {
+    if (!capture_.open(camera_id_, cv::CAP_DSHOW)) {
 
         log("ERROR", "카메라 열기 실패 (device " + std::to_string(camera_id_) + ")");
         return false;
@@ -263,10 +263,16 @@ bool CameraManager::try_connect() {
 //==============================================================================
 
 bool CameraManager::detect_motion(const cv::Mat& frame) {
+    // ★ 모션 감지용으로만 더 작게 리사이즈
+    cv::Mat small;
+    cv::resize(frame, small, cv::Size(320, 240));  // 절반으로 축소
+
     cv::Mat fg_mask;
-    bg_sub_->apply(frame, fg_mask);
+    bg_sub_->apply(small, fg_mask);  // 작은 이미지로 감지
+
     int motion_pixels = cv::countNonZero(fg_mask);
-    return (motion_pixels > motion_threshold_);
+    // 임계값도 해상도 비율에 맞게 조정 (1/4 크기)
+    return (motion_pixels > motion_threshold_ / 4);
 }
 
 //==============================================================================

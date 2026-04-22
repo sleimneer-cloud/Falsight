@@ -2,9 +2,10 @@
  * @file HttpServer.cpp
  * @brief HttpServer 클래스 구현
  *
- * 로그 강화 버전:
- * - 요청 수신 → 파일 탐색 → ffmpeg 추출 → 업로드 전 구간 로그
- * - 각 단계 실패 시 명확한 원인 출력
+ * 클립 추출 방식:
+ * - 낙상 발생 시각 기준 fall_time 이전 duration초만 추출
+ * - 현재 녹화 중인 파일 추출 가능 (analyzeduration/probesize 옵션)
+ * - 두 파일 concat 제거 (단순화)
  */
 
 #define _CRT_SECURE_NO_WARNINGS
@@ -33,39 +34,28 @@ namespace fs = std::filesystem;
 
 namespace {
 
-    /**
-     * @brief fall_time 파싱 - Unix ms / ISO 8601 두 형식 모두 지원
-     */
     int64_t parse_fall_time(const std::string& json, const std::string& key) {
         size_t pos = json.find("\"" + key + "\"");
         if (pos == std::string::npos) return -1;
-
         pos = json.find(":", pos);
         if (pos == std::string::npos) return -1;
         pos++;
-
         while (pos < json.size() && (json[pos] == ' ' || json[pos] == '\t')) pos++;
         if (pos >= json.size()) return -1;
 
         if (json[pos] == '"') {
-            // ISO 8601 파싱
             pos++;
             size_t end_pos = json.find('"', pos);
             if (end_pos == std::string::npos) return -1;
-
             std::string iso_str = json.substr(pos, end_pos - pos);
             struct tm tm_info = {};
             int ms_part = 0;
-
             int parsed = sscanf(iso_str.c_str(), "%4d-%2d-%2dT%2d:%2d:%2d",
                 &tm_info.tm_year, &tm_info.tm_mon, &tm_info.tm_mday,
                 &tm_info.tm_hour, &tm_info.tm_min, &tm_info.tm_sec);
-
             if (parsed != 6) return -1;
-
             tm_info.tm_year -= 1900;
             tm_info.tm_mon -= 1;
-
             size_t dot_pos = iso_str.find('.');
             if (dot_pos != std::string::npos) {
                 std::string ms_str = iso_str.substr(dot_pos + 1);
@@ -77,13 +67,11 @@ namespace {
                 }
                 catch (...) { ms_part = 0; }
             }
-
             time_t time_sec = _mkgmtime(&tm_info);
             if (time_sec == -1) return -1;
             return static_cast<int64_t>(time_sec) * 1000 + ms_part;
         }
         else {
-            // Unix ms 파싱
             try { return std::stoll(json.substr(pos)); }
             catch (...) { return -1; }
         }
@@ -144,7 +132,6 @@ HttpServer::~HttpServer() {
 // 공개 인터페이스
 //==============================================================================
 
-
 bool HttpServer::start() {
     if (running_.load()) { log("WARN", "이미 실행 중 - start() 무시됨"); return false; }
     running_ = true;
@@ -185,12 +172,7 @@ void HttpServer::server_thread_func() {
         log("INFO", "Health check 요청");
         });
 
-    //--------------------------------------------------------------------------
-    // ★ [STEP 1] 녹화 명령 수신
-    // Main Server → Node1
-    //--------------------------------------------------------------------------
     server.Post("/api/edge/record", [this](const httplib::Request& req, httplib::Response& res) {
-
         log("INFO", "");
         log("INFO", "============================================================");
         log("INFO", "[STEP 1] Main Server 녹화 요청 수신");
@@ -230,10 +212,9 @@ void HttpServer::server_thread_func() {
             log("INFO", "[STEP 1] 파싱 결과:");
             log("INFO", "  fall_id  = " + std::to_string(fall_id));
             log("INFO", "  cam_id   = " + std::to_string(cam_id));
-            log("INFO", "  duration = " + std::to_string(duration) + "초");
+            log("INFO", "  duration = " + std::to_string(duration) + "초 (낙상 전 영상)");
             log("INFO", "  fall_time= " + std::to_string(fall_time));
 
-            // 카메라 상태 확인
             if (camera_status_callback_ && !camera_status_callback_(cam_id)) {
                 log("ERROR", "[STEP 1] 카메라 " + std::to_string(cam_id) + " 오프라인 → 요청 거부");
                 res.status = 404;
@@ -245,7 +226,6 @@ void HttpServer::server_thread_func() {
             }
             log("INFO", "[STEP 1] 카메라 " + std::to_string(cam_id) + " 상태: 정상");
 
-            // 클립 요청 큐에 추가
             ClipRequest clip_req;
             clip_req.fall_id = fall_id;
             clip_req.camera_id = cam_id;
@@ -254,7 +234,6 @@ void HttpServer::server_thread_func() {
             clip_req.fall_time = fall_time;
 
             enqueue_clip_request(clip_req);
-
             log("INFO", "[STEP 1] 클립 추출 큐에 추가 완료 → 즉시 응답 후 백그라운드 처리");
 
             res.set_content(
@@ -313,7 +292,7 @@ void HttpServer::clip_worker_func() {
         log("INFO", "[STEP 2] 클립 추출 시작");
         log("INFO", "  fall_id  = " + std::to_string(request.fall_id));
         log("INFO", "  cam_id   = " + std::to_string(request.camera_id));
-        log("INFO", "  duration = " + std::to_string(request.duration) + "초");
+        log("INFO", "  duration = " + std::to_string(request.duration) + "초 (낙상 전)");
         log("INFO", "  fall_time= " + std::to_string(request.fall_time));
         log("INFO", "============================================================");
 
@@ -321,23 +300,18 @@ void HttpServer::clip_worker_func() {
 
         if (clip_path.empty()) {
             upload_fail_count_++;
-            log("ERROR", "[STEP 2] ★ 클립 추출 실패 - fall_id=" +
-                std::to_string(request.fall_id));
-            log("ERROR", "  → 위 로그에서 어느 단계 실패인지 확인하세요");
+            log("ERROR", "[STEP 2] ★ 클립 추출 실패 - fall_id=" + std::to_string(request.fall_id));
             continue;
         }
 
         log("INFO", "[STEP 2] 클립 추출 성공: " + clip_path);
 
-        //----------------------------------------------------------------------
-        // [STEP 3] 업로드
-        //----------------------------------------------------------------------
         log("INFO", "");
         log("INFO", "[STEP 3] Main Server 업로드 시작");
 
         if (upload_clip(clip_path, request)) {
             upload_count_++;
-            log("INFO", "[STEP 3] ★ 업로드 성공 - 클립 보관 유지");
+            log("INFO", "[STEP 3] ★ 업로드 성공");
             log("INFO", "  경로: " + clip_path);
         }
         else {
@@ -362,21 +336,17 @@ void HttpServer::enqueue_clip_request(const ClipRequest& request) {
 
 //==============================================================================
 // [STEP 2-1] 클립 추출 메인
+// ★ 변경: 낙상 전 duration초만 추출 (concat 제거)
 //==============================================================================
 
 std::string HttpServer::extract_clip(const ClipRequest& request) {
 
-    //--------------------------------------------------------------------------
-    // 출력 경로 생성
-    //--------------------------------------------------------------------------
     std::string output_dir = storage_path_ + "/clips";
-    std::string temp_dir = storage_path_ + "/clips/temp";
 
     log("INFO", "[STEP 2-1] 출력 폴더 확인: " + output_dir);
 
     try {
         fs::create_directories(output_dir);
-        fs::create_directories(temp_dir);
         log("INFO", "[STEP 2-1] 출력 폴더 준비 완료");
     }
     catch (const std::exception& e) {
@@ -392,16 +362,12 @@ std::string HttpServer::extract_clip(const ClipRequest& request) {
     std::string output_path = output_filename.str();
 
     log("INFO", "[STEP 2-1] 출력 파일 경로: " + output_path);
-
-    int half_duration = request.duration / 2;
-    log("INFO", "[STEP 2-1] 클립 구간: 낙상 전 " + std::to_string(half_duration) +
-        "초 + 낙상 후 " + std::to_string(half_duration) + "초");
+    log("INFO", "[STEP 2-1] 추출 구간: 낙상 전 " + std::to_string(request.duration) + "초");
 
     //--------------------------------------------------------------------------
     // [STEP 2-2] 파일 탐색
     //--------------------------------------------------------------------------
     log("INFO", "[STEP 2-2] 녹화 파일 탐색 시작");
-    log("INFO", "  저장 경로: " + storage_path_);
     log("INFO", "  카메라: cam" + std::to_string(request.camera_id));
     log("INFO", "  fall_time: " + std::to_string(request.fall_time));
 
@@ -409,47 +375,30 @@ std::string HttpServer::extract_clip(const ClipRequest& request) {
 
     if (curr_file.empty()) {
         log("ERROR", "[STEP 2-2] ★ 녹화 파일 없음");
-        log("ERROR", "  확인 필요: " + storage_path_ +
-            "/cam" + std::to_string(request.camera_id) + "/ 폴더에 mp4 파일이 있는지 확인");
         return "";
     }
     log("INFO", "[STEP 2-2] 파일 발견: " + curr_file);
 
     //--------------------------------------------------------------------------
     // [STEP 2-3] seek 위치 계산
+    // ★ 변경: fall_time 기준 duration초 앞부터 시작
     //--------------------------------------------------------------------------
-    log("INFO", "[STEP 2-3] seek 위치 계산");
-    int seek_sec = calculate_seek_seconds(curr_file, request.fall_time, half_duration);
+    log("INFO", "[STEP 2-3] seek 위치 계산 (낙상 전 " +
+        std::to_string(request.duration) + "초)");
+
+    int seek_sec = calculate_seek_seconds(curr_file, request.fall_time, request.duration);
     log("INFO", "[STEP 2-3] 계산된 seek: " + std::to_string(seek_sec) + "초");
 
-    //--------------------------------------------------------------------------
-    // [STEP 2-4] 파일 경계 판단 → 추출
-    //--------------------------------------------------------------------------
+    // seek가 음수면 파일 시작부터
     if (seek_sec < 0) {
-        log("INFO", "[STEP 2-4] ★ 파일 경계 감지 (seek=" +
-            std::to_string(seek_sec) + ") → 이전 파일 병합 필요");
-
-        std::string prev_file = find_prev_recording_file(request.camera_id, request.fall_time);
-
-        if (prev_file.empty()) {
-            log("WARN", "[STEP 2-4] 이전 파일 없음 → 현재 파일 처음(0초)부터 추출");
-            return extract_single_file(curr_file, 0, request.duration, output_path);
-        }
-
-        log("INFO", "[STEP 2-4] 이전 파일: " + prev_file);
-
-        int prev_seek = 3600 + seek_sec;
-        if (prev_seek < 0) prev_seek = 0;
-        log("INFO", "[STEP 2-4] 이전 파일 내 seek: " + std::to_string(prev_seek) + "초");
-
-        return extract_two_files(
-            prev_file, curr_file,
-            prev_seek, request.duration,
-            output_path, temp_dir
-        );
+        log("WARN", "[STEP 2-3] seek 음수 → 파일 시작(0초)부터 추출");
+        seek_sec = 0;
     }
 
-    log("INFO", "[STEP 2-4] 단일 파일 추출");
+    //--------------------------------------------------------------------------
+    // [STEP 2-4] 추출
+    //--------------------------------------------------------------------------
+    log("INFO", "[STEP 2-4] 단일 파일 추출 시작");
     return extract_single_file(curr_file, seek_sec, request.duration, output_path);
 }
 
@@ -460,15 +409,14 @@ std::string HttpServer::extract_clip(const ClipRequest& request) {
 std::string HttpServer::extract_single_file(const std::string& source,
     int seek_sec, int duration, const std::string& output) {
 
-    log("INFO", "[STEP 2-5] ffmpeg 단일 파일 추출 시작");
+    log("INFO", "[STEP 2-5] ffmpeg 추출 시작");
     log("INFO", "  원본:  " + source);
     log("INFO", "  seek:  " + std::to_string(seek_sec) + "초");
     log("INFO", "  길이:  " + std::to_string(duration) + "초");
     log("INFO", "  출력:  " + output);
 
-    // 원본 파일 존재 여부 재확인
     if (!fs::exists(source)) {
-        log("ERROR", "[STEP 2-5] ★ 원본 파일이 존재하지 않음: " + source);
+        log("ERROR", "[STEP 2-5] ★ 원본 파일 없음: " + source);
         return "";
     }
     log("INFO", "[STEP 2-5] 원본 파일 크기: " +
@@ -476,9 +424,9 @@ std::string HttpServer::extract_single_file(const std::string& source,
 
     std::ostringstream cmd;
     cmd << "ffmpeg -y "
-        // ★ 녹화 중인 파일도 읽을 수 있게 옵션 추가
-        << "-analyzeduration 10M "
-        << "-probesize 10M "
+        // ★ 녹화 중인 파일도 읽을 수 있게
+        << "-analyzeduration 100M "
+        << "-probesize 100M "
         << "-ss " << seek_sec
         << " -i \"" << source << "\" "
         << "-t " << duration << " "
@@ -490,18 +438,15 @@ std::string HttpServer::extract_single_file(const std::string& source,
     log("INFO", "[STEP 2-5] ffmpeg 명령: " + cmd.str());
 
     int result = std::system(cmd.str().c_str());
-
     log("INFO", "[STEP 2-5] ffmpeg 종료 코드: " + std::to_string(result));
 
     if (result != 0) {
         log("ERROR", "[STEP 2-5] ★ ffmpeg 실패 (code=" + std::to_string(result) + ")");
-        log("ERROR", "  확인 필요: ffmpeg가 PATH에 등록되어 있는지 확인");
-        log("ERROR", "  확인 필요: 원본 파일이 유효한 mp4인지 확인");
         return "";
     }
 
     if (!fs::exists(output)) {
-        log("ERROR", "[STEP 2-5] ★ 출력 파일이 생성되지 않음: " + output);
+        log("ERROR", "[STEP 2-5] ★ 출력 파일 생성 안 됨: " + output);
         return "";
     }
 
@@ -514,86 +459,18 @@ std::string HttpServer::extract_single_file(const std::string& source,
 }
 
 //==============================================================================
-// [STEP 2-6] 두 파일 concat 후 추출
-//==============================================================================
-
-std::string HttpServer::extract_two_files(const std::string& file1,
-    const std::string& file2, int seek_sec, int duration,
-    const std::string& output, const std::string& temp_dir) {
-
-    log("INFO", "[STEP 2-6] 두 파일 concat 추출 시작");
-    log("INFO", "  파일1 (이전): " + file1);
-    log("INFO", "  파일2 (현재): " + file2);
-    log("INFO", "  seek: " + std::to_string(seek_sec) + "초 (파일1 기준)");
-
-    auto normalize = [](std::string path) {
-        for (auto& c : path) if (c == '\\') c = '/';
-        return path;
-        };
-
-    std::string ts = std::to_string(now_ms());
-    std::string list_path = temp_dir + "/list_" + ts + ".txt";
-    std::string merged_path = temp_dir + "/merged_" + ts + ".mp4";
-
-    // concat list 생성
-    {
-        std::ofstream list_file(list_path);
-        if (!list_file) {
-            log("ERROR", "[STEP 2-6] concat list 생성 실패: " + list_path);
-            return "";
-        }
-        list_file << "file '" << normalize(file1) << "'\n";
-        list_file << "file '" << normalize(file2) << "'\n";
-        log("INFO", "[STEP 2-6] concat list 생성 완료: " + list_path);
-    }
-
-    // concat 실행
-    std::ostringstream merge_cmd;
-    merge_cmd << "ffmpeg -y -f concat -safe 0 "
-        << "-i \"" << list_path << "\" -c copy "
-        << "\"" << merged_path << "\" 2>&1";
-
-    log("INFO", "[STEP 2-6] ffmpeg concat 실행");
-
-    int result = std::system(merge_cmd.str().c_str());
-    log("INFO", "[STEP 2-6] concat 종료 코드: " + std::to_string(result));
-
-    if (result != 0 || !fs::exists(merged_path)) {
-        log("ERROR", "[STEP 2-6] ★ concat 실패 (code=" + std::to_string(result) + ")");
-        try { fs::remove(list_path); }
-        catch (...) {}
-        return "";
-    }
-
-    log("INFO", "[STEP 2-6] merged 완료: " +
-        std::to_string(fs::file_size(merged_path) / 1024 / 1024) + " MB");
-
-    // 클립 추출
-    std::string clip_result = extract_single_file(merged_path, seek_sec, duration, output);
-
-    // 임시 파일 정리
-    try {
-        fs::remove(list_path);
-        fs::remove(merged_path);
-        log("INFO", "[STEP 2-6] 임시 파일 정리 완료");
-    }
-    catch (...) {}
-
-    return clip_result;
-}
-
-//==============================================================================
 // seek 위치 계산
+// ★ 변경: fall_time 기준 duration초 앞 위치 반환
 //==============================================================================
 
 int HttpServer::calculate_seek_seconds(const std::string& filepath,
-    int64_t fall_time, int half_duration) const {
+    int64_t fall_time, int duration) const {
 
     std::string stem = fs::path(filepath).stem().string();
     log("INFO", "  파일명 stem: " + stem);
 
     if (stem.size() < 11) {
-        log("WARN", "  파일명 형식 불일치 (YYYYMMDD_HH 형식이어야 함) - seek 0 반환");
+        log("WARN", "  파일명 형식 불일치 - seek 0 반환");
         return 0;
     }
 
@@ -615,12 +492,14 @@ int HttpServer::calculate_seek_seconds(const std::string& filepath,
     time_t fall_sec = static_cast<time_t>(fall_time / 1000);
 
     int fall_in_file = static_cast<int>(fall_sec - file_start_sec);
-    int seek_sec = fall_in_file - half_duration;
+
+    // ★ 낙상 전 duration초 시작점
+    int seek_sec = fall_in_file - duration;
 
     log("INFO", "  파일 시작: " + std::to_string(file_start_sec) + " (Unix)");
     log("INFO", "  낙상 시각: " + std::to_string(fall_sec) + " (Unix)");
     log("INFO", "  파일 내 낙상 위치: " + std::to_string(fall_in_file) + "초");
-    log("INFO", "  클립 시작 위치(seek): " + std::to_string(seek_sec) + "초");
+    log("INFO", "  클립 시작(seek): " + std::to_string(seek_sec) + "초");
 
     return seek_sec;
 }
@@ -629,32 +508,6 @@ int HttpServer::calculate_seek_seconds(const std::string& filepath,
 // 파일 탐색
 //==============================================================================
 
-std::string HttpServer::find_prev_recording_file(int camera_id, int64_t fall_time) const {
-    int64_t prev_timestamp = fall_time - (3600LL * 1000);
-    std::string cam_folder = storage_path_ + "/cam" + std::to_string(camera_id);
-
-    log("INFO", "  이전 파일 탐색 폴더: " + cam_folder);
-
-    if (!fs::exists(cam_folder)) {
-        log("ERROR", "  ★ 폴더 없음: " + cam_folder);
-        return "";
-    }
-
-    time_t time_sec = static_cast<time_t>(prev_timestamp / 1000);
-    struct tm tm_info;
-    localtime_s(&tm_info, &time_sec);
-
-    std::ostringstream oss;
-    oss << cam_folder << "/" << std::put_time(&tm_info, "%Y%m%d_%H") << ".mp4";
-    std::string path = oss.str();
-
-    log("INFO", "  탐색 대상: " + path);
-
-    if (fs::exists(path)) { log("INFO", "  발견: " + path); return path; }
-    log("WARN", "  이전 파일 없음: " + path);
-    return "";
-}
-
 std::string HttpServer::find_recording_file(int camera_id, int64_t timestamp) {
     std::string cam_folder = storage_path_ + "/cam" + std::to_string(camera_id);
 
@@ -662,7 +515,6 @@ std::string HttpServer::find_recording_file(int camera_id, int64_t timestamp) {
 
     if (!fs::exists(cam_folder)) {
         log("ERROR", "  ★ 카메라 폴더 없음: " + cam_folder);
-        log("ERROR", "  → StorageManager가 정상적으로 저장 중인지 확인 필요");
         return "";
     }
 
@@ -683,32 +535,10 @@ std::string HttpServer::find_recording_file(int camera_id, int64_t timestamp) {
         return target;
     }
 
-    // 없으면 최근 파일 탐색
-    log("WARN", "  정확한 파일 없음 (" + expected.str() + ") → 폴더 내 최근 파일 검색");
-
-    std::string latest_file;
-    std::filesystem::file_time_type latest_time;
-
-    for (const auto& entry : fs::directory_iterator(cam_folder)) {
-        if (entry.is_regular_file() && entry.path().extension() == ".mp4") {
-            log("INFO", "  발견된 파일: " + entry.path().string());
-            auto wtime = fs::last_write_time(entry);
-            if (latest_file.empty() || wtime > latest_time) {
-                latest_file = entry.path().string();
-                latest_time = wtime;
-            }
-        }
-    }
-
-    if (latest_file.empty()) {
-        log("ERROR", "  ★ 폴더에 mp4 파일이 하나도 없음");
-        log("ERROR", "  → StorageManager 동작 여부 확인 필요");
-    }
-    else {
-        log("WARN", "  대체 파일 사용: " + latest_file);
-    }
-
-    return latest_file;
+    // ★ 현재 시간대 파일 없으면 즉시 실패
+    log("ERROR", "  ★ 파일 없음: " + target);
+    log("ERROR", "  → Node1이 해당 시간대에 실행 중이었는지 확인");
+    return "";
 }
 
 //==============================================================================
@@ -717,10 +547,9 @@ std::string HttpServer::find_recording_file(int camera_id, int64_t timestamp) {
 
 bool HttpServer::upload_clip(const std::string& filepath, const ClipRequest& request) {
     log("INFO", "[STEP 3] 업로드 준비");
-    log("INFO", "  원본 파일: " + filepath);
+    log("INFO", "  파일: " + filepath);
     log("INFO", "  대상: " + main_server_ip_ + ":" + std::to_string(main_server_port_));
 
-    // 파일 읽기
     std::ifstream file(filepath, std::ios::binary | std::ios::ate);
     if (!file) {
         log("ERROR", "[STEP 3] ★ 파일 열기 실패: " + filepath);
@@ -739,9 +568,9 @@ bool HttpServer::upload_clip(const std::string& filepath, const ClipRequest& req
         std::to_string(file_size / 1024 / 1024) + " MB");
 
     // 메타데이터 생성
-    int half_duration = request.duration / 2;
-    int64_t clip_start_ms = request.fall_time - (static_cast<int64_t>(half_duration) * 1000);
-    int64_t clip_end_ms = request.fall_time + (static_cast<int64_t>(half_duration) * 1000);
+    // ★ 낙상 전만 추출하므로 clip_start = fall_time - duration, clip_end = fall_time
+    int64_t clip_start_ms = request.fall_time - (static_cast<int64_t>(request.duration) * 1000);
+    int64_t clip_end_ms = request.fall_time;
 
     log("INFO", "[STEP 3] 메타데이터:");
     log("INFO", "  node_id    = 1");
@@ -761,39 +590,34 @@ bool HttpServer::upload_clip(const std::string& filepath, const ClipRequest& req
         << "\"clip_end\":" << "\"" << ms_to_iso(clip_end_ms) << "\""
         << "}";
 
-    // HTTP POST
-    log("INFO", "[STEP 3] HTTP POST 전송 시작 → /video/upload");
-
     httplib::Client client(main_server_ip_, main_server_port_);
     client.set_connection_timeout(UPLOAD_TIMEOUT_SEC, 0);
     client.set_read_timeout(UPLOAD_TIMEOUT_SEC, 0);
     client.set_write_timeout(UPLOAD_TIMEOUT_SEC, 0);
 
-    // ★ 추가된 로직: 메인 서버 규격에 맞춘 안전한 가상 파일명 생성 (예: fall_104_cam0.mp4)
     std::string safe_filename = "fall_" + std::to_string(request.fall_id) +
         "_cam" + std::to_string(request.camera_id) + ".mp4";
 
     std::string boundary = "----WebKitFormBoundary" + std::to_string(now_ms());
-
-    // ★ 수정된 로직: 원본 파일명(filepath) 대신 safe_filename을 폼 데이터 헤더에 삽입
     std::string body_prefix =
         "--" + boundary + "\r\n"
         "Content-Disposition: form-data; name=\"metadata\"\r\n"
         "Content-Type: application/json\r\n\r\n" +
         metadata.str() + "\r\n"
         "--" + boundary + "\r\n"
-        "Content-Disposition: form-data; name=\"video_file\"; filename=\"" + safe_filename + "\"\r\n"
+        "Content-Disposition: form-data; name=\"video_file\"; filename=\"" +
+        safe_filename + "\"\r\n"
         "Content-Type: video/mp4\r\n\r\n";
 
     std::string full_body = body_prefix + video_data + "\r\n--" + boundary + "--\r\n";
 
+    log("INFO", "[STEP 3] HTTP POST 전송 시작 → /video/upload");
     log("INFO", "[STEP 3] 전송 크기: " +
-        std::to_string(full_body.size() / 1024 / 1024) + " MB (파일명: " + safe_filename + ")");
+        std::to_string(full_body.size() / 1024 / 1024) + " MB");
 
     auto result = client.Post("/video/upload", full_body,
         ("multipart/form-data; boundary=" + boundary).c_str());
 
-    // 응답 처리
     if (!result) {
         log("ERROR", "[STEP 3] ★ 연결 실패 (error=" +
             std::to_string(static_cast<int>(result.error())) + ")");
@@ -802,7 +626,7 @@ bool HttpServer::upload_clip(const std::string& filepath, const ClipRequest& req
         return false;
     }
 
-    log("INFO", "[STEP 3] HTTP 응답 수신: status=" + std::to_string(result->status));
+    log("INFO", "[STEP 3] HTTP 응답: status=" + std::to_string(result->status));
     log("INFO", "[STEP 3] 응답 body: " + result->body);
 
     const std::string& body = result->body;
@@ -811,19 +635,13 @@ bool HttpServer::upload_clip(const std::string& filepath, const ClipRequest& req
     if ((result->status == 200 || result->status == 201) && status_val == "success") {
         log("INFO", "[STEP 3] ★ 업로드 성공!");
         log("INFO", "  서버 저장 경로: " + parse_json_string(body, "file_path"));
-        log("INFO", "  서버 파일 크기: " + parse_json_number(body, "file_size") + " bytes");
         return true;
     }
 
     std::string code = parse_json_string(body, "code");
     std::string message = parse_json_string(body, "message");
 
-    if (result->status == 507 || code == "STORAGE_FULL") {
-        log("ERROR", "[STEP 3] ★ Main Server 저장 공간 부족 (507)");
-    }
-    else {
-        log("ERROR", "[STEP 3] ★ 업로드 실패 - HTTP " + std::to_string(result->status));
-    }
+    log("ERROR", "[STEP 3] ★ 업로드 실패 - HTTP " + std::to_string(result->status));
     log("ERROR", "  code:    " + code);
     log("ERROR", "  message: " + message);
     return false;
@@ -867,6 +685,7 @@ int64_t HttpServer::now_ms() {
         std::chrono::system_clock::now().time_since_epoch()
     ).count();
 }
+
 std::string HttpServer::get_iso_timestamp() {
     return ms_to_iso(now_ms());
 }
