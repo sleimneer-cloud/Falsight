@@ -29,5 +29,6 @@ void MainServerClient::onTextMessageReceived(QString message) {
 }
 
 void MainServerClient::onError(QAbstractSocket::SocketError error) {
+    Q_UNUSED(error);
     emit logReady("[WebSocket] 에러 발생: " + m_webSocket.errorString());
 }

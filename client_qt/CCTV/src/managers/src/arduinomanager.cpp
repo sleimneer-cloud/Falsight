@@ -26,7 +26,7 @@ bool ArduinoManager::connectDevice(const QString &portName, int baudRate) {
         return true;
     } else {
         emit logReady(QString("[Arduino] 아두이노 연결 실패! 포트: %1, 에러: %2")
-                      .arg(portName).arg(m_serial->errorString()));
+                          .arg(portName, m_serial->errorString()));
         return false;
     }
 }
@@ -57,4 +57,8 @@ void ArduinoManager::sendCommand(const QByteArray &command) {
     } else {
         emit logReady("[Arduino] Error: 포트가 닫혀있어 명령을 보낼 수 없습니다.");
     }
+}
+
+void ArduinoManager::stopAlarm() {
+    sendCommand("ALARM_OFF\n");
 }

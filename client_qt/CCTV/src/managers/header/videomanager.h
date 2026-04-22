@@ -4,16 +4,19 @@
 #include <QObject>
 #include <QThread>
 #include <QByteArray>
+#include <QList>      // 👉 다중 스레드 관리를 위해 추가
+#include <QImage>     
 #include <zmq.hpp>
 #include "packetheader.h"
 
 // =========================================================
-// [데이터 수신부] ZmqReceiverWorker (포트 9002번)
+// [데이터 수신부] ZmqReceiverWorker (각 카메라 포트별 할당)
 // =========================================================
 class ZmqReceiverWorker : public QObject {
     Q_OBJECT
 public:
-    explicit ZmqReceiverWorker(const QString& dataEndpoint, QObject* parent = nullptr);
+    // 👉 cameraId를 추가로 받도록 수정
+    explicit ZmqReceiverWorker(int cameraId, const QString& dataEndpoint, QObject* parent = nullptr);
     ~ZmqReceiverWorker();
 
 public slots:
@@ -21,10 +24,11 @@ public slots:
     void stopReceiving();
 
 signals:
-    void frameReceived(int cameraId, const QByteArray& imageData);
-    void logReady(QString message); // 👉 로그 전달용 시그널 추가
+    void frameReceived(int cameraId, QImage image); 
+    void logReady(QString message); 
 
 private:
+    int m_cameraId;       // 👉 현재 워커가 담당하는 카메라 ID
     QString m_dataEndpoint;
     bool m_running;
 };
@@ -41,17 +45,18 @@ public:
     Q_INVOKABLE void startStreaming();
     Q_INVOKABLE void stopStreaming();
 
-    // 👉 추가: 9000번 포트로 VCR에 제어 명령(재생/탐색 등)을 요청하는 함수
     void sendControlCommand(int cameraId, int commandType, float value = 0.0f);
 
 signals:
-    void newFrame(int cameraId, QByteArray imageData);
-    void logReady(QString message); // 👉 컨트롤러로 전달할 시그널 추가
+    void newFrame(int cameraId, QImage image);
+    void logReady(QString message); 
 
 private:
-    QThread* m_workerThread;
-    ZmqReceiverWorker* m_worker;
-    QString m_controlEndpoint; // 제어용 9000번 포트 주소
+    // 👉 단일 객체에서 리스트로 변경 (카메라 대수만큼 스레드 생성)
+    QList<QThread*> m_workerThreads;
+    QList<ZmqReceiverWorker*> m_workers;
+    
+    QString m_controlEndpoint; 
 };
 
 #endif // VIDEOMANAGER_H

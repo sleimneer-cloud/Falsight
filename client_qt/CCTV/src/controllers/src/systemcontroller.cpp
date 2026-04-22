@@ -101,24 +101,9 @@ void SystemController::seekVideo(int chIndex, float position) {
 }
 
 // ZMQ 워커 -> Manager -> Controller로 데이터가 도착함
-void SystemController::onNewFrameReceived(int cameraId, QByteArray imageData) {
-    // 스레드 확인 로그 추가
-    qDebug() << "onNewFrameReceived 스레드:"
-             << QThread::currentThread()
-             << "메인 스레드:"
-             << QCoreApplication::instance()->thread()
-             << "같음:" << (QThread::currentThread() == 
-                            QCoreApplication::instance()->thread());
-    QImage frame;
-    // JPEG QByteArray를 QImage로 디코딩
-    if (frame.loadFromData(imageData, "JPEG")) {
-        // 프로바이더에 최신 이미지 업데이트
-        m_imageProvider->updateImage(cameraId, frame);
-        // QML에 해당 채널이 업데이트되었음을 알림
-        emit frameUpdated(cameraId);
-    } else {
-        qDebug() << "JPEG 디코딩 실패! 채널:" << cameraId;
-    }
+void SystemController::onNewFrameReceived(int cameraId, QImage image) {
+    m_imageProvider->updateImage(cameraId, image);
+    emit frameUpdated(cameraId);
 }
 
 void SystemController::onLogReady(QString message) {
@@ -160,10 +145,12 @@ void SystemController::onWsTextMessageReceived(QString message) {
         QString logMsg = QString("[🚨 긴급] 낙상 감지! (카메라: %1, 사고번호: %2)").arg(camId).arg(fallId);
         onLogReady(logMsg);
 
-        // 3. ⭐️ 아두이노 알람 작동 ⭐️
+        // 3. 아두이노 알람 작동
         if (m_arduinoManager) {
             m_arduinoManager->triggerAlarm();
         }
+        // 👉 추가: QML의 팝업창을 띄우기 위해 시그널 발생!
+        emit emergencyFallDetected(camId, fallId);
     }
 }
 
@@ -221,4 +208,12 @@ void SystemController::onDownloadFinished(QNetworkReply *reply)
     
     // reply를 지우면, 아까 부모로 묶어둔 QFile도 자동으로 close() 되고 메모리 해제됨
     reply->deleteLater(); 
+}
+
+void SystemController::stopArduinoAlarm() {
+    if (m_arduinoManager) {
+        // ArduinoManager에 알람을 끄는 명령 전달
+        m_arduinoManager->stopAlarm(); 
+        onLogReady("[System] 사용자가 이벤트를 확인하여 아두이노 알람을 해제합니다.");
+    }
 }

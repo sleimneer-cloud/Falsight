@@ -1,7 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
-import QtMultimedia // 👉 비디오 스트리밍 플레이어를 위해 추가
+import QtMultimedia 
 
 Item {
     id: playbackView
@@ -9,10 +9,14 @@ Item {
     property bool isEventListOpen: false 
     property string currentPlayUrl: ""
     property string currentFileName: "event_video.mp4"
-    property date selectedDate: new Date(2026, 0, 1)
+    
+    // 👉 수정됨: 단일 날짜 대신 시작 날짜와 종료 날짜 프로퍼티로 분리
+    property date startDate: new Date(new Date().getFullYear(), new Date().getMonth(), new Date().getDate() - 7) // 기본값: 7일 전
+    property date endDate: new Date() // 기본값: 오늘
+    property bool isSelectingStart: true // 팝업이 열릴 때 시작일을 수정하는지, 종료일을 수정하는지 구분하는 플래그
 
     // ==========================================
-    // 👉 C++ SystemController의 시그널 수신부
+    // C++ SystemController의 시그널 수신부
     // ==========================================
     Connections {
         target: sysController
@@ -36,7 +40,7 @@ Item {
 
         function onVideoUrlReady(streamUrl) {
             console.log("스트리밍 URL 수신:", streamUrl)
-            currentPlayUrl = streamUrl // 현재 재생 URL 기억
+            currentPlayUrl = streamUrl
             mediaPlayer.source = streamUrl
             mediaPlayer.play() 
         }
@@ -46,7 +50,7 @@ Item {
         anchors.fill: parent
         spacing: 0
 
-        // ... (1. 상단 네비게이션 바는 이전과 동일) ...
+        // 1. 상단 타이틀 바 (기존과 동일)
         Rectangle {
             Layout.fillWidth: true
             implicitHeight: 60
@@ -79,7 +83,7 @@ Item {
         }
 
         // ==========================================
-        // 2. 컨트롤 바 
+        // 2. 컨트롤 바 (날짜 범위 선택 & 리스트 요청)
         // ==========================================
         Rectangle {
             Layout.fillWidth: true
@@ -92,150 +96,158 @@ Item {
                 spacing: 15
 
                 Text { text: "이벤트 영상"; color: "white"; font.pixelSize: 15; font.bold: true }
-                Item { implicitWidth: 20 }
+                Item { implicitWidth: 10 }
                 
                 ComboBox {
-                    model: ["CAM 1", "CAM 2", "CAM 3", "CAM 4"]
-                    implicitWidth: 120
+                    model: ["CAM 전체", "CAM 1", "CAM 2", "CAM 3", "CAM 4"] // 편의를 위해 전체 옵션 추가
+                    implicitWidth: 110
                     contentItem: Text { text: parent.displayText; color: "white"; leftPadding: 10; verticalAlignment: Text.AlignVCenter }
                     background: Rectangle { color: "#1C2434"; radius: 5 }
                 }
 
+                // 👉 수정됨: 시작 날짜 버튼
                 Button {
-                    id: dateBtn
-                    // 프로퍼티에 바인딩되어 날짜를 바꾸면 버튼 텍스트가 자동으로 바뀝니다.
-                    text: "📅 " + Qt.formatDate(selectedDate, "yyyy. MM. dd.")
+                    id: startDateBtn
+                    text: "📅 " + Qt.formatDate(startDate, "yyyy.MM.dd")
                     contentItem: Text { text: parent.text; color: "white"; font.pixelSize: 13; horizontalAlignment: Text.AlignHCenter }
-                    background: Rectangle { color: "#1C2434"; radius: 5; implicitWidth: 130; implicitHeight: 30 }
-                    
-                    // 버튼 클릭 시 아래의 팝업 열기
-                    onClicked: datePopup.open()
+                    background: Rectangle { color: "#1C2434"; radius: 5; implicitWidth: 110; implicitHeight: 30 }
+                    onClicked: {
+                        isSelectingStart = true
+                        yearTumbler.currentIndex = startDate.getFullYear() - 2000
+                        monthTumbler.currentIndex = startDate.getMonth()
+                        dayTumbler.currentIndex = startDate.getDate() - 1
+                        datePopup.open()
+                    }
+                }
 
-                    // ==========================================
-                    // 날짜 선택 팝업 (Tumbler UI)
-                    // ==========================================
-                    Popup {
-                        id: datePopup
-                        y: dateBtn.height + 5 // 버튼 바로 아래에 스르륵 나타남
-                        width: 240
-                        height: 200
-                        padding: 10
-                        background: Rectangle { color: "#141B2D"; radius: 8; border.color: "#2C75FF"; border.width: 1 }
+                // 👉 수정됨: 물결(~) 텍스트 
+                Text { text: "~"; color: "white"; font.bold: true; font.pixelSize: 16 }
 
-                        ColumnLayout {
-                            anchors.fill: parent
-                            spacing: 10
+                // 👉 수정됨: 종료 날짜 버튼
+                Button {
+                    id: endDateBtn
+                    text: "📅 " + Qt.formatDate(endDate, "yyyy.MM.dd")
+                    contentItem: Text { text: parent.text; color: "white"; font.pixelSize: 13; horizontalAlignment: Text.AlignHCenter }
+                    background: Rectangle { color: "#1C2434"; radius: 5; implicitWidth: 110; implicitHeight: 30 }
+                    onClicked: {
+                        isSelectingStart = false
+                        yearTumbler.currentIndex = endDate.getFullYear() - 2000
+                        monthTumbler.currentIndex = endDate.getMonth()
+                        dayTumbler.currentIndex = endDate.getDate() - 1
+                        datePopup.open()
+                    }
+                }
+
+                // 공용 날짜 선택 팝업
+                Popup {
+                    id: datePopup
+                    y: startDateBtn.height + 5 
+                    width: 240
+                    height: 200
+                    padding: 10
+                    background: Rectangle { color: "#141B2D"; radius: 8; border.color: "#2C75FF"; border.width: 1 }
+
+                    ColumnLayout {
+                        anchors.fill: parent
+                        spacing: 10
+                        
+                        // 현재 어떤 날짜를 고르고 있는지 헤더 텍스트
+                        Text { 
+                            text: isSelectingStart ? "시작 날짜 선택" : "종료 날짜 선택" 
+                            color: "#2C75FF"
+                            font.bold: true
+                            Layout.alignment: Qt.AlignHCenter
+                        }
+                        
+                        RowLayout {
+                            Layout.fillWidth: true
+                            Layout.fillHeight: true
                             
-                            // 스피닝 휠 (Tumbler) UI 영역
-                            RowLayout {
-                                Layout.fillWidth: true
-                                Layout.fillHeight: true
-                                
-                                // 년도 휠
-                                Tumbler {
-                                    id: yearTumbler
-                                    model: 100 // 2000년 ~ 2099년
-                                    currentIndex: selectedDate.getFullYear() - 2000
-                                    delegate: Text {
-                                        text: (2000 + index) + "년"
-                                        // 중앙에 온 글자는 하얗고 크게, 벗어난 글자는 작고 흐리게
-                                        color: Tumbler.displacement === 0 ? "white" : "#8A94A6"
-                                        font.pixelSize: Tumbler.displacement === 0 ? 15 : 12
-                                        horizontalAlignment: Text.AlignHCenter
-                                        verticalAlignment: Text.AlignVCenter
-                                    }
-                                }
-                                // 월 휠
-                                Tumbler {
-                                    id: monthTumbler
-                                    model: 12
-                                    currentIndex: selectedDate.getMonth()
-                                    delegate: Text {
-                                        text: (index + 1) + "월"
-                                        color: Tumbler.displacement === 0 ? "white" : "#8A94A6"
-                                        font.pixelSize: Tumbler.displacement === 0 ? 15 : 12
-                                        horizontalAlignment: Text.AlignHCenter
-                                        verticalAlignment: Text.AlignVCenter
-                                    }
-                                }
-                                // 일 휠
-                                Tumbler {
-                                    id: dayTumbler
-                                    model: 31
-                                    currentIndex: selectedDate.getDate() - 1
-                                    delegate: Text {
-                                        text: (index + 1) + "일"
-                                        color: Tumbler.displacement === 0 ? "white" : "#8A94A6"
-                                        font.pixelSize: Tumbler.displacement === 0 ? 15 : 12
-                                        horizontalAlignment: Text.AlignHCenter
-                                        verticalAlignment: Text.AlignVCenter
-                                    }
+                            Tumbler {
+                                id: yearTumbler; model: 100 // 2000~2099
+                                delegate: Text {
+                                    text: (2000 + index) + "년"
+                                    color: Tumbler.displacement === 0 ? "white" : "#8A94A6"
+                                    font.pixelSize: Tumbler.displacement === 0 ? 15 : 12
+                                    horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter
                                 }
                             }
-
-                            // 확인/취소 버튼 영역
-                            RowLayout {
-                                Layout.alignment: Qt.AlignRight
-                                spacing: 10
-                                
-                                Button {
-                                    text: "취소"
-                                    contentItem: Text { text: parent.text; color: "#8A94A6"; font.pixelSize: 12 }
-                                    background: Rectangle { color: "transparent" }
-                                    onClicked: datePopup.close()
+                            Tumbler {
+                                id: monthTumbler; model: 12
+                                delegate: Text {
+                                    text: (index + 1) + "월"
+                                    color: Tumbler.displacement === 0 ? "white" : "#8A94A6"
+                                    font.pixelSize: Tumbler.displacement === 0 ? 15 : 12
+                                    horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter
                                 }
-                                
-                                Button {
-                                    text: "적용"
-                                    contentItem: Text { text: parent.text; color: "white"; font.pixelSize: 12; font.bold: true; horizontalAlignment: Text.AlignHCenter }
-                                    background: Rectangle { color: "#2C75FF"; radius: 4; implicitWidth: 50; implicitHeight: 25 }
-                                    onClicked: {
-                                        var y = 2000 + yearTumbler.currentIndex
-                                        var m = monthTumbler.currentIndex
-                                        var d = dayTumbler.currentIndex + 1
-                                        
-                                        // 1. 휠에서 선택한 값으로 날짜 업데이트 (버튼 텍스트는 자동 갱신됨)
-                                        selectedDate = new Date(y, m, d)
-                                        datePopup.close()
-                                        
-                                        // 2. 👉 메인 서버에 "선택한 날짜의 이벤트 목록" 재요청!
-                                        // 해당 날짜의 00:00:00 부터 23:59:59 까지의 Unix Timestamp(ms)를 계산합니다.
-                                        var startOfDay = new Date(y, m, d, 0, 0, 0).getTime()
-                                        var endOfDay = new Date(y, m, d, 23, 59, 59).getTime()
-                                        
-                                        console.log("새로운 날짜 검색 ->", Qt.formatDate(selectedDate, "yyyy-MM-dd"))
-                                        
-                                        // 255(0xFF)는 '전체 카메라 조회'를 의미합니다.
-                                        sysController.fetchEventList(255, startOfDay, endOfDay)
+                            }
+                            Tumbler {
+                                id: dayTumbler; model: 31
+                                delegate: Text {
+                                    text: (index + 1) + "일"
+                                    color: Tumbler.displacement === 0 ? "white" : "#8A94A6"
+                                    font.pixelSize: Tumbler.displacement === 0 ? 15 : 12
+                                    horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter
+                                }
+                            }
+                        }
+
+                        RowLayout {
+                            Layout.alignment: Qt.AlignRight
+                            spacing: 10
+                            
+                            Button {
+                                text: "취소"
+                                contentItem: Text { text: parent.text; color: "#8A94A6"; font.pixelSize: 12 }
+                                background: Rectangle { color: "transparent" }
+                                onClicked: datePopup.close()
+                            }
+                            
+                            Button {
+                                text: "적용"
+                                contentItem: Text { text: parent.text; color: "white"; font.pixelSize: 12; font.bold: true; horizontalAlignment: Text.AlignHCenter }
+                                background: Rectangle { color: "#2C75FF"; radius: 4; implicitWidth: 50; implicitHeight: 25 }
+                                onClicked: {
+                                    var y = 2000 + yearTumbler.currentIndex
+                                    var m = monthTumbler.currentIndex
+                                    var d = dayTumbler.currentIndex + 1
+                                    
+                                    // 👉 수정됨: 선택한 날짜를 변수에만 반영하고 통신은 이벤트 목록 버튼에서 수행
+                                    if (isSelectingStart) {
+                                        startDate = new Date(y, m, d)
+                                    } else {
+                                        endDate = new Date(y, m, d)
                                     }
+                                    datePopup.close()
                                 }
                             }
                         }
                     }
                 }
 
-                // 👉 수정: 이벤트 목록 버튼 클릭 시 C++로 데이터 요청
+                // 👉 수정됨: 이벤트 목록 조회 버튼 (여기서 통신 요청 실행)
                 Button {
-                    text: isEventListOpen ? "목록 닫기 ❌" : "이벤트 목록 📋"
+                    text: isEventListOpen ? "목록 닫기 ❌" : "조회 요청 📋"
                     contentItem: Text { text: parent.text; color: isEventListOpen ? "#FF4444" : "#00FF00"; font.pixelSize: 13; font.bold: true; horizontalAlignment: Text.AlignHCenter }
                     background: Rectangle { color: "#1C2434"; radius: 5; implicitWidth: 110; implicitHeight: 30; border.color: isEventListOpen ? "#FF4444" : "#00FF00" }
                     onClicked: {
                         isEventListOpen = !isEventListOpen
                         if (isEventListOpen) {
-                            // C++로 리스트 요청 (camId: 255(0xFF 전체), 임의의 timestamp 0)
-                            sysController.fetchEventList(255, 0, 0)
+                            // 시작일의 00:00:00 Unix Timestamp (ms)
+                            var startOfDay = new Date(startDate.getFullYear(), startDate.getMonth(), startDate.getDate(), 0, 0, 0).getTime()
+                            
+                            // 종료일의 23:59:59 Unix Timestamp (ms)
+                            var endOfDay = new Date(endDate.getFullYear(), endDate.getMonth(), endDate.getDate(), 23, 59, 59).getTime()
+                            
+                            console.log("메인서버(8100/310번)로 기간 데이터 요청 -> 시작:", Qt.formatDate(startDate, "yyyy-MM-dd"), "종료:", Qt.formatDate(endDate, "yyyy-MM-dd"))
+                            
+                            // C++의 fetchEventList 호출 (TCP 패킷 310번으로 전송됨)
+                            sysController.fetchEventList(255, startOfDay, endOfDay)
                         }
                     }
                 }
 
-                ComboBox {
-                    model: ["1x", "2x", "4x", "8x"]
-                    implicitWidth: 70
-                    contentItem: Text { text: parent.displayText; color: "white"; leftPadding: 10; verticalAlignment: Text.AlignVCenter }
-                    background: Rectangle { color: "#1C2434"; radius: 5 }
-                }
-
-                Item { Layout.fillWidth: true }
+                Item { Layout.fillWidth: true } // 우측 정렬용 스페이서
 
                 Button {
                     text: "실시간"
@@ -252,7 +264,7 @@ Item {
         }
 
         // ==========================================
-        // 3. 메인 영상 플레이어 영역 (MediaPlayer 도입)
+        // 3. 메인 영상 플레이어 영역 (기존과 동일)
         // ==========================================
         Rectangle {
             Layout.fillWidth: true
@@ -263,24 +275,20 @@ Item {
             border.color: "#1C2434"
             border.width: 1
 
-            // 👉 추가: 실제 영상을 재생할 플레이어
             MediaPlayer {
                 id: mediaPlayer
                 audioOutput: AudioOutput {}
                 videoOutput: videoOutput
-                
-                // 재생 에러 발생 시 로그 출력
                 onErrorOccurred: console.log("미디어 재생 에러: ", mediaPlayer.errorString)
             }
 
             VideoOutput {
                 id: videoOutput
                 anchors.fill: parent
-                anchors.margins: 2 // 테두리 보호
+                anchors.margins: 2 
                 fillMode: VideoOutput.PreserveAspectFit
             }
 
-            // 영상이 재생 중이지 않을 때만 보여줄 플레이스홀더 텍스트
             Text {
                 anchors.centerIn: parent
                 text: "▶️ 비디오 재생 영역 (대기 중)"
@@ -289,7 +297,6 @@ Item {
                 visible: mediaPlayer.playbackState !== MediaPlayer.PlayingState
             }
             
-            // 👉 추가: 영상 다운로드(저장) 버튼
             Button {
                 anchors.bottom: parent.bottom; anchors.right: parent.right
                 anchors.margins: 15
@@ -301,14 +308,13 @@ Item {
                         console.log("다운로드할 영상이 없습니다.")
                         return
                     }
-                    // C++의 다운로드 함수 호출
                     sysController.downloadVideo(currentPlayUrl, currentFileName)
                 }
             }
         }
 
         // ==========================================
-        // 4. 하단 타임라인 컨트롤러 (재생/정지 버튼 연동)
+        // 4. 하단 타임라인 컨트롤러 (기존과 동일)
         // ==========================================
         Rectangle {
             Layout.fillWidth: true
@@ -327,7 +333,6 @@ Item {
                         id: timeSlider
                         Layout.fillWidth: true
                         value: mediaPlayer.position / Math.max(1, mediaPlayer.duration)
-                        // 배경, 핸들 디자인은 이전과 동일 (생략 없이 유지)
                         background: Rectangle {
                             x: timeSlider.leftPadding; y: timeSlider.topPadding + timeSlider.availableHeight / 2 - height / 2
                             implicitWidth: 200; implicitHeight: 4; width: timeSlider.availableWidth; height: implicitHeight; radius: 2; color: "#1C2434"
@@ -339,7 +344,6 @@ Item {
                             implicitWidth: 14; implicitHeight: 14; radius: 7; color: timeSlider.pressed ? "#1A5BE6" : "#2C75FF"
                         }
                         onMoved: {
-                            // 슬라이더 이동 시 미디어 위치 변경
                             mediaPlayer.position = value * mediaPlayer.duration
                         }
                     }
@@ -417,7 +421,6 @@ Item {
                 clip: true
                 spacing: 8
 
-                // 👉 수정: 더미 데이터를 지우고 빈 ListModel 생성
                 model: ListModel { id: eventListModel }
 
                 delegate: Rectangle {
@@ -432,9 +435,7 @@ Item {
                         onEntered: parent.color = "#2A3650"
                         onExited: parent.color = "#1C2434"
                         onClicked: {
-                            // 👉 파일명 자동 생성 (예: Event_104_CAM1.mp4)
                             currentFileName = "Event_" + model.eventId + "_CAM" + model.camId + ".mp4"
-                            
                             sysController.fetchVideoUrl(model.camId, model.eventId)
                         }
                     }

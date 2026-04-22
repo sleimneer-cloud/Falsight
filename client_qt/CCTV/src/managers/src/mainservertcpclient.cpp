@@ -1,110 +1,125 @@
-// src/managers/src/mainservertcpclient.cpp
 #include "mainservertcpclient.h"
 #include "packetheader.h"
 #include <QtEndian>
 #include <QJsonDocument>
+#include <QJsonArray>
 #include <QJsonObject>
-#include <QDateTime>
+#include <QDebug>
 
 MainServerTcpClient::MainServerTcpClient(QObject *parent) : QObject(parent) {
-    connect(&m_socket, &QTcpSocket::connected, this, &MainServerTcpClient::onConnected);
-    connect(&m_socket, &QTcpSocket::readyRead, this, &MainServerTcpClient::onReadyRead);
-    connect(&m_socket, QOverload<QAbstractSocket::SocketError>::of(&QTcpSocket::errorOccurred),
-            this, &MainServerTcpClient::onError);
+    m_socket = new QTcpSocket(this);
+    connect(m_socket, &QTcpSocket::connected, this, &MainServerTcpClient::onConnected);
+    connect(m_socket, &QTcpSocket::disconnected, this, &MainServerTcpClient::onDisconnected);
+    connect(m_socket, &QTcpSocket::readyRead, this, &MainServerTcpClient::onReadyRead);
 }
 
-void MainServerTcpClient::connectToServer(const QString &ip, quint16 port) {
-    emit logReady(QString("[MainServer TCP] 연결 시도 -> %1:%2").arg(ip).arg(port));
-    m_socket.connectToHost(ip, port);
+MainServerTcpClient::~MainServerTcpClient() {
+    m_socket->disconnectFromHost();
+}
+
+void MainServerTcpClient::connectToServer(const QString& ip, quint16 port) {
+    emit logReady(QString("[TCP] 메인 서버(%1:%2) 연결 시도 중...").arg(ip).arg(port));
+    m_socket->connectToHost(ip, port);
 }
 
 void MainServerTcpClient::onConnected() {
-    emit logReady("[MainServer TCP] 메인 서버 접속 성공! (10.10.10.113:8100)");
+    emit logReady("[TCP] 8100번 메인 서버 제어 포트 연결 성공!");
 }
 
-// 1. [ID: 310] 리스트 요청
+void MainServerTcpClient::onDisconnected() {
+    emit logReady("[TCP] 8100번 메인 서버와 연결이 끊어졌습니다.");
+}
+
+// ==============================================================================
+// 1. 송신: 리스트 요청 (310)
+// ==============================================================================
 void MainServerTcpClient::requestEventList(int camId, qint64 startTime, qint64 endTime) {
-    if (m_socket.state() != QTcpSocket::ConnectedState) {
-        emit logReady("[MainServer TCP] 연결 안됨! 리스트 요청 불가.");
+    if (m_socket->state() != QAbstractSocket::ConnectedState) {
+        emit logReady("[TCP 에러] 서버에 연결되어 있지 않습니다.");
         return;
     }
 
     ReqEventListHeader req;
     req.message_id = qToBigEndian<uint16_t>(310);
     req.camera_id  = static_cast<uint8_t>(camId);
-    req.reserved   = 0x00;
+    req.reserved   = 0;
     req.start_time = qToBigEndian<uint64_t>(static_cast<uint64_t>(startTime));
     req.end_time   = qToBigEndian<uint64_t>(static_cast<uint64_t>(endTime));
 
-    m_socket.write(reinterpret_cast<const char*>(&req), sizeof(req));
-    emit logReady(QString("[ID:310] 이벤트 리스트 요청 전송 (CAM: %1)").arg(camId));
+    m_socket->write(reinterpret_cast<const char*>(&req), sizeof(ReqEventListHeader));
+    m_socket->flush();
 }
 
-// 2. [ID: 302] 영상 URL 요청
+// ==============================================================================
+// 2. 송신: 영상 URL 요청 (302)
+// ==============================================================================
 void MainServerTcpClient::requestVideoUrl(int camId, qint64 eventId) {
-    if (m_socket.state() != QTcpSocket::ConnectedState) return;
+    if (m_socket->state() != QAbstractSocket::ConnectedState) return;
 
     ReqEventVideoHeader req;
     req.message_id = qToBigEndian<uint16_t>(302);
     req.camera_id  = static_cast<uint8_t>(camId);
-    req.event_type = 0x01; // 낙상
+    req.event_type = 0x01; // 임의 지정 (명세서에 맞게)
     req.event_id   = qToBigEndian<uint64_t>(static_cast<uint64_t>(eventId));
-    req.timestamp  = qToBigEndian<uint64_t>(QDateTime::currentMSecsSinceEpoch());
+    req.timestamp  = qToBigEndian<uint64_t>(static_cast<uint64_t>(QDateTime::currentMSecsSinceEpoch()));
 
-    m_socket.write(reinterpret_cast<const char*>(&req), sizeof(req));
-    emit logReady(QString("[ID:302] 이벤트 영상 URL 요청 전송 (EventID: %1)").arg(eventId));
+    m_socket->write(reinterpret_cast<const char*>(&req), sizeof(ReqEventVideoHeader));
+    m_socket->flush();
 }
 
-// 3. 비동기 수신 처리 (스트림 분절 해결)
+// ==============================================================================
+// 3. 수신: 데이터 파싱 (TCP 단편화 및 Big-Endian 처리)
+// ==============================================================================
 void MainServerTcpClient::onReadyRead() {
-    m_buffer.append(m_socket.readAll());
+    m_buffer.append(m_socket->readAll());
 
-    while (true) {
-        // [상태 1] 20바이트 헤더 읽기 대기
-        if (!m_isReadingPayload) {
-            if (m_buffer.size() < sizeof(ResMainServerHeader)) return; // 데이터 부족
+    // 헤더(20바이트) 이상 데이터가 모였을 때만 처리 진행
+    while (m_buffer.size() >= static_cast<int>(sizeof(ResMainServerHeader))) {
+        
+        // 1. 버퍼에서 헤더만 살짝 복사해서 읽기
+        ResMainServerHeader header;
+        memcpy(&header, m_buffer.constData(), sizeof(ResMainServerHeader));
 
-            auto* header = reinterpret_cast<const ResMainServerHeader*>(m_buffer.constData());
-            m_currentMsgId = qFromBigEndian<uint16_t>(header->message_id);
-            m_currentStatusCode = header->status_code;
-            m_expectedPayloadSize = qFromBigEndian<uint32_t>(header->payload_size);
+        // 2. Big-Endian 숫자를 내 컴퓨터 숫자(Little-Endian)로 변환
+        uint16_t msgId = qFromBigEndian<uint16_t>(header.message_id);
+        uint32_t payloadSize = qFromBigEndian<uint32_t>(header.payload_size);
 
-            m_buffer.remove(0, sizeof(ResMainServerHeader));
-            m_isReadingPayload = true;
+        // 3. 헤더 + 페이로드가 모두 도착했는지 검사 (아직 덜 왔으면 루프 탈출 후 대기)
+        if (m_buffer.size() < static_cast<int>(sizeof(ResMainServerHeader) + payloadSize)) {
+            break; 
         }
 
-        // [상태 2] 페이로드(JSON/URL) 읽기 대기
-        if (m_isReadingPayload) {
-            if (m_buffer.size() < m_expectedPayloadSize) return; // 페이로드 덜 옴
+        // 4. 온전한 패킷이 다 모였으므로 페이로드 데이터 추출
+        QByteArray payload = m_buffer.mid(sizeof(ResMainServerHeader), payloadSize);
+        
+        // 5. 처리한 만큼 버퍼에서 잘라내기
+        m_buffer.remove(0, sizeof(ResMainServerHeader) + payloadSize);
 
-            QByteArray payloadData = m_buffer.left(m_expectedPayloadSize);
-            m_buffer.remove(0, m_expectedPayloadSize);
-            m_isReadingPayload = false; // 초기화 (다음 패킷을 위해)
+        // ========================================================
+        // 수신된 데이터 분기 처리
+        // ========================================================
+        if (header.status_code == 0x01) {
+            emit logReady("[TCP] 응답 데이터가 없습니다 (status: 0x01).");
+            if (msgId == 311) emit eventListReceived(QVariantList()); // 빈 리스트 넘김
+            continue;
+        }
 
-            // 에러 처리
-            if (m_currentStatusCode != 0x00) {
-                emit logReady(QString("[MainServer Error] 코드: %1, 사유: %2").arg(m_currentStatusCode).arg(QString::fromUtf8(payloadData)));
-                continue;
+        if (msgId == 311) {
+            // JSON 배열 파싱 (이벤트 리스트)
+            QJsonDocument doc = QJsonDocument::fromJson(payload);
+            if (doc.isArray()) {
+                QVariantList list = doc.array().toVariantList();
+                emit logReady(QString("[TCP] 이벤트 리스트 %1건 수신 완료").arg(list.size()));
+                emit eventListReceived(list);
+            } else {
+                emit logReady("[TCP 에러] 수신된 311 페이로드가 JSON 배열이 아닙니다.");
             }
-
-            // 응답 분기 처리
-            if (m_currentMsgId == 311) {
-                // 리스트 응답 파싱
-                QJsonDocument doc = QJsonDocument::fromJson(payloadData);
-                emit logReady("[ID:311] 이벤트 리스트 응답 수신 완료");
-                if (doc.isArray()) {
-                    emit eventListReceived(doc.array().toVariantList());
-                }
-            } else if (m_currentMsgId == 303) {
-                // URL 응답 파싱 (단순 텍스트 스트링 또는 JSON)
-                QString url = QString::fromUtf8(payloadData).trimmed();
-                emit logReady("[ID:303] 스트리밍 URL 수신: " + url);
-                emit videoUrlReceived(url);
-            }
+        } 
+        else if (msgId == 303) {
+            // 일반 텍스트 파싱 (영상 URL)
+            QString url = QString::fromUtf8(payload);
+            emit logReady("[TCP] 영상 URL 수신 완료: " + url);
+            emit videoUrlReceived(url);
         }
     }
-}
-
-void MainServerTcpClient::onError(QAbstractSocket::SocketError socketError) {
-    emit logReady("[MainServer TCP] 통신 에러: " + m_socket.errorString());
 }

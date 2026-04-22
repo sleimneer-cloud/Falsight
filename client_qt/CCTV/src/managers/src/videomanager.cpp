@@ -1,14 +1,16 @@
 #include "videomanager.h"
-#include "packetheader.h" // 👉 구조체 인식을 위해 필수
+#include "packetheader.h" 
 #include <QDebug>
-#include <QTcpSocket>
-#include <QtEndian> // Big-Endian 변환용
+#include <QtEndian> 
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QImage>
 
 // =========================================================
-// ZmqReceiverWorker (실시간 스트리밍 수신 - 9002번 포트)
+// ZmqReceiverWorker (포트별 독립 수신)
 // =========================================================
-ZmqReceiverWorker::ZmqReceiverWorker(const QString& dataEndpoint, QObject* parent)
-    : QObject(parent), m_dataEndpoint(dataEndpoint), m_running(false) {}
+ZmqReceiverWorker::ZmqReceiverWorker(int cameraId, const QString& dataEndpoint, QObject* parent)
+    : QObject(parent), m_cameraId(cameraId), m_dataEndpoint(dataEndpoint), m_running(false) {}
 
 ZmqReceiverWorker::~ZmqReceiverWorker() {
     stopReceiving();
@@ -19,94 +21,88 @@ void ZmqReceiverWorker::startReceiving() {
     zmq::context_t context(1);
     zmq::socket_t socket(context, ZMQ_SUB);
 
-    // 1. 연결 시도 로그
-    QString startMsg = QString("[Data] VCR 스트리밍 서버 연결 시도 중... -> %1").arg(m_dataEndpoint);
+    QString startMsg = QString("[Data] CAM %1 스트리밍 연결 시도... -> %2").arg(m_cameraId).arg(m_dataEndpoint);
     qDebug() << startMsg;
     emit logReady(startMsg); 
 
     socket.connect(m_dataEndpoint.toStdString());
-    socket.set(zmq::sockopt::subscribe, "cam0");
-    socket.set(zmq::sockopt::subscribe, "cam1");
+    
+    // 👉 포트별로 분리되었으므로, 해당 포트로 들어오는 "모든 데이터"를 구독 ("" 지정)
+    socket.set(zmq::sockopt::subscribe, ""); 
 
-
-    int timeout = 500; // 0.5초
+    int timeout = 500; 
     socket.set(zmq::sockopt::rcvtimeo, timeout);
 
-    // 💡 변수 선언 완벽 정리
-    int silenceCounter = 0;   // 데이터 미수신 횟수 카운터
-    bool isConnected = false; // 실제 데이터 수신 여부 플래그
-    int debugCounter = 0;     // 30프레임 확인용 디버그 카운터 (추가됨)
+    int silenceCounter = 0;   
+    bool isConnected = false;  
 
     while (m_running) {
-        zmq::message_t topic_msg, header_msg, payload_msg;
+        zmq::message_t part1, part2, part3;
 
-        // 1. Topic 수신 시도
-        auto r1 = socket.recv(topic_msg, zmq::recv_flags::none);
+        // 1. 첫 번째 파트 수신
+        auto r1 = socket.recv(part1, zmq::recv_flags::none);
 
-        if (!r1) { // 500ms 동안 데이터가 오지 않음
+        if (!r1) { 
             silenceCounter++;
-            
-            // 0.5초 * 6번 = 3초 동안 데이터가 없으면 연결 실패/끊김으로 판단
             if (silenceCounter >= 6 && isConnected) {
-                QString failMsg = "[Data 에러] VCR 서버와 연결이 끊어졌습니다. (데이터 미수신)";
-                qDebug() << failMsg;
+                QString failMsg = QString("[Data 에러] CAM %1 연결 끊김 (데이터 미수신)").arg(m_cameraId);
                 emit logReady(failMsg);
-                isConnected = false; // 상태 변경
+                isConnected = false; 
             } else if (silenceCounter == 6 && !isConnected) {
-                // 처음부터 연결이 안 된 경우
-                QString failMsg = "[Data 에러] VCR 서버(9002)가 닫혀있거나 응답이 없습니다.";
-                qDebug() << failMsg;
+                QString failMsg = QString("[Data 에러] CAM %1 서버(%2) 응답 없음").arg(m_cameraId).arg(m_dataEndpoint);
                 emit logReady(failMsg);
             }
             continue; 
         }
 
-        // 💡 수정됨: timeoutCounter -> silenceCounter로 통일
-        // 프레임 정상 수신 시 카운터 리셋 및 연결 복구 로그
         if (!isConnected && silenceCounter > 0) {
-            emit logReady("[Data] VCR 영상 스트리밍 수신 재개됨!");
+            emit logReady(QString("[Data] CAM %1 수신 재개됨!").arg(m_cameraId));
         }
         isConnected = true;
-        silenceCounter = 0; // 카운터 초기화
+        silenceCounter = 0; 
 
-        if (!topic_msg.more()) continue;
+        if (!part1.more()) continue;
 
-        // 2. Header 수신 
-        auto r2 = socket.recv(header_msg, zmq::recv_flags::none);
-        if (!r2 || !header_msg.more()) continue;
+        // 2. 두 번째 파트 수신
+        auto r2 = socket.recv(part2, zmq::recv_flags::none);
+        if (!r2) continue;
 
-        // 3. Payload (JPEG 데이터) 수신 
-        auto r3 = socket.recv(payload_msg, zmq::recv_flags::none);
-        if (!r3) continue;
+        zmq::message_t header_msg;
+        zmq::message_t payload_msg;
 
-        // 💡 수정됨: 프로그램 크래시 방지를 위한 안전장치(예외 처리) 복구
+        // 💡 VCR 서버 변경 대응: 
+        // 기존처럼 3단(Topic->Header->Payload)으로 오는지,
+        // 포트가 분리되어 2단(Header->Payload)으로 오는지 자동으로 구분합니다.
+        if (part2.more()) {
+            auto r3 = socket.recv(part3, zmq::recv_flags::none);
+            if (!r3) continue;
+            // 3단 메시지인 경우
+            header_msg = std::move(part2);
+            payload_msg = std::move(part3);
+        } else {
+            // 2단 메시지인 경우
+            header_msg = std::move(part1);
+            payload_msg = std::move(part2);
+        }
+
         if (header_msg.size() != sizeof(ViewerPacketHeader)) {
-            qDebug() << "헤더 크기 불일치! 받은 크기:" << header_msg.size() 
-                     << "예상 크기:" << sizeof(ViewerPacketHeader);
-            continue; // 비정상 패킷은 스킵 (강제 종료 방지)
+            // qDebug() << "[CAM" << m_cameraId << "] 헤더 크기 에러";
+            continue; 
         }
 
-        // 데이터 검증 및 처리
-        if (header_msg.size() == sizeof(ViewerPacketHeader)) {
-            auto* header = static_cast<ViewerPacketHeader*>(header_msg.data());
-            
-            // ========================================================
-            // 수신된 토픽과 ID를 30프레임마다 출력
-            debugCounter++;
-            if (debugCounter % 15 == 0) { 
-                QString rcvTopic = QString::fromStdString(std::string(static_cast<const char*>(topic_msg.data()), topic_msg.size()));
-                qDebug() << "👀 [크로스체크] 수신된 토픽명:" << rcvTopic << "| 구조체 내 카메라 ID:" << header->camera_id;
-            }
-            // ========================================================
-
-            QByteArray frameData(static_cast<const char*>(payload_msg.data()), 
-                                 static_cast<int>(payload_msg.size()));
-            
-            emit frameReceived(header->camera_id, frameData);
+        // 3. 정상 수신 처리 및 디코딩
+        auto* header = static_cast<ViewerPacketHeader*>(header_msg.data());
+        Q_UNUSED(header);
+        QByteArray frameData(static_cast<const char*>(payload_msg.data()), static_cast<int>(payload_msg.size()));
+        
+        QImage frame;
+        if (frame.loadFromData(frameData, "JPEG")) {
+            // 구조체에 담긴 아이디를 무시하고, 이 포트에 할당된 m_cameraId를 기준으로 전송 (안전성 보장)
+            emit frameReceived(m_cameraId, frame); 
         }
-    }
+    } 
     
-    qDebug() << "[VideoManager] ZMQ Receiver Thread Safely Stopped.";
+    qDebug() << QString("[VideoManager] CAM %1 ZMQ 스레드 정상 종료.").arg(m_cameraId);
 }
 
 void ZmqReceiverWorker::stopReceiving() {
@@ -114,68 +110,88 @@ void ZmqReceiverWorker::stopReceiving() {
 }
 
 // =========================================================
-// VideoManager (제어부 - 9000번 포트)
+// VideoManager (멀티 스레드 제어부)
 // =========================================================
 VideoManager::VideoManager(const QString& controlEndpoint, QObject* parent) 
     : QObject(parent), m_controlEndpoint(controlEndpoint) 
 {
-    m_workerThread = new QThread(this);
-    
-    // 스트리밍 워커에는 9002번 포트를 전달
-    m_worker = new ZmqReceiverWorker("tcp://10.10.10.100:9002");
-    m_worker->moveToThread(m_workerThread);
+    // 👉 카메라 대수 설정 (필요시 이 숫자를 8이나 16으로 늘리면 포트가 자동 할당됩니다)
+    const int MAX_CAMERAS = 4;
+    const int BASE_PORT = 7000;
 
-    connect(m_workerThread, &QThread::started, m_worker, &ZmqReceiverWorker::startReceiving);
+    for (int i = 0; i < MAX_CAMERAS; ++i) {
+        QThread* thread = new QThread(this);
+        
+        // tcp://10.10.10.100:7000, 7001, 7002... 순으로 생성
+        QString endpoint = QString("tcp://10.10.10.100:%1").arg(BASE_PORT + i);
+        ZmqReceiverWorker* worker = new ZmqReceiverWorker(i, endpoint);
+        
+        worker->moveToThread(thread);
 
+        connect(thread, &QThread::started, worker, &ZmqReceiverWorker::startReceiving);
+        connect(worker, &ZmqReceiverWorker::frameReceived, this, &VideoManager::newFrame, Qt::QueuedConnection);
+        connect(worker, &ZmqReceiverWorker::logReady, this, &VideoManager::logReady);
 
-    // connect(m_worker, &ZmqReceiverWorker::frameReceived, this, &VideoManager::newFrame);
-    connect(m_worker, &ZmqReceiverWorker::frameReceived, this, &VideoManager::newFrame,Qt::QueuedConnection);
-    connect(m_worker, &ZmqReceiverWorker::logReady, this, &VideoManager::logReady);
+        m_workerThreads.append(thread);
+        m_workers.append(worker);
+    }
 }
 
 VideoManager::~VideoManager() {
     stopStreaming();
-    m_workerThread->quit();
-    m_workerThread->wait();
+    for (QThread* thread : m_workerThreads) {
+        thread->quit();
+        thread->wait();
+    }
 }
 
 void VideoManager::startStreaming() {
-    if (!m_workerThread->isRunning()) {
-        m_workerThread->start();
+    for (QThread* thread : m_workerThreads) {
+        if (!thread->isRunning()) {
+            thread->start();
+        }
     }
 }
 
 void VideoManager::stopStreaming() {
-    if (m_worker) {
-        QMetaObject::invokeMethod(m_worker, "stopReceiving", Qt::QueuedConnection);
+    for (ZmqReceiverWorker* worker : m_workers) {
+        QMetaObject::invokeMethod(worker, "stopReceiving", Qt::QueuedConnection);
     }
 }
 
-void VideoManager::sendControlCommand(int cameraId, int commandType, float value) {
-    QTcpSocket tcpSocket;
-    tcpSocket.connectToHost("10.10.10.100", 9000); 
+void VideoManager::sendControlCommand(int cameraId, int commandType, float /*value*/) {
+    zmq::context_t context(1);
+    zmq::socket_t socket(context, zmq::socket_type::req);
+    
+    socket.set(zmq::sockopt::rcvtimeo, 2000); 
+    socket.set(zmq::sockopt::sndtimeo, 2000);
+    
+    try {
+        socket.connect("tcp://10.10.10.100:9000");
 
-    if (tcpSocket.waitForConnected(3000)) {
-        QString logMsg = QString("[Control] VCR 제어 연결 성공 (10.10.10.100:9000)");
-        emit logReady(logMsg); 
-        VcrControlRequest req;
-        
-        req.message_id = qToBigEndian<uint16_t>(300);
-        req.camera_id = static_cast<uint8_t>(cameraId);
-        req.request_type = static_cast<uint8_t>(commandType);
-        
-        uint64_t targetTime = static_cast<uint64_t>(value); 
-        req.start_time = qToBigEndian<uint64_t>(targetTime);
-        req.end_time = qToBigEndian<uint64_t>(targetTime + 10000); 
-
-        tcpSocket.write(reinterpret_cast<const char*>(&req), sizeof(VcrControlRequest));
-        if (tcpSocket.waitForBytesWritten(500)) {
-            emit logReady(QString("[Control] CAM %1 영상 탐색 명령 전송 완료 (ID: 300)").arg(cameraId));
+        QJsonObject jsonObj;
+        if (commandType == 1) {
+            jsonObj["command"] = "camera_on";
+        } else if (commandType == 2) {
+            jsonObj["command"] = "camera_off";
         }
-        tcpSocket.disconnectFromHost();
-    } else {
-        QString errorMsg = "[Control] VCR TCP 제어 포트(9000) 연결 실패!";
-        qDebug() << errorMsg;
-        emit logReady(errorMsg); 
+        jsonObj["cam_id"] = cameraId;
+        
+        QJsonDocument doc(jsonObj);
+        QByteArray jsonBytes = doc.toJson(QJsonDocument::Compact);
+
+        zmq::message_t request(jsonBytes.data(), jsonBytes.size());
+        auto res = socket.send(request, zmq::send_flags::none);
+
+        if (res) {
+            zmq::message_t reply;
+            auto rcvRes = socket.recv(reply, zmq::recv_flags::none);
+            if (rcvRes) {
+                QString replyStr = QString::fromUtf8(static_cast<char*>(reply.data()), reply.size());
+                emit logReady(QString("[Control] CAM %1 제어 성공: %2").arg(cameraId).arg(replyStr));
+            }
+        }
+    } catch (const zmq::error_t& e) {
+        qDebug() << "[Control] ZMQ 통신 에러:" << e.what();
     }
 }
