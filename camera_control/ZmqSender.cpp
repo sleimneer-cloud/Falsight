@@ -190,7 +190,7 @@ bool ZmqSender::send_frame(const FrameData& frame) {
             return false;
         }
 
-        AIPacketHeader header{};  // ← {} 초기화 추가
+        AIPacketHeader header{};  // ← {} 초기화 유지
         header.camera_id = static_cast<uint8_t>(frame.camera_id);
         header.padding[0] = 0;
         header.padding[1] = 0;
@@ -199,26 +199,32 @@ bool ZmqSender::send_frame(const FrameData& frame) {
         header.frame_id = frame.frame_id;
         header.jpeg_size = static_cast<uint32_t>(jpeg_buffer.size());
 
+        // =====================================================================
+        // ★ 핵심 추가: 스레드 무한 대기(Blocking)를 막기 위해 무조건 dontwait 결합
+        // =====================================================================
+        const auto flags_more = zmq::send_flags::sndmore | zmq::send_flags::dontwait;
+        const auto flags_end = zmq::send_flags::dontwait;
+
         // Part 1: Header
         zmq::message_t header_msg(&header, sizeof(AIPacketHeader));
-        auto result1 = socket_->send(header_msg, zmq::send_flags::sndmore);
+        auto result1 = socket_->send(header_msg, flags_more);
 
         if (!result1.has_value()) {
-            log("WARN", "헤더 전송 실패 (frame_id=" +
+            log("WARN", "AI 전송 헤더 실패 (버퍼 포화, frame_id=" +
                 std::to_string(frame.frame_id) + ")");
 
-            // ★ sndmore 상태 해제 - 빈 메시지로 강제 종료
+            // ★ sndmore 상태 해제 - 빈 메시지로 강제 종료 (여기서도 dontwait 필수!)
             zmq::message_t empty(0);
-            socket_->send(empty, zmq::send_flags::none);
+            socket_->send(empty, flags_end);
             return false;
         }
 
         // Part 2: Payload
         zmq::message_t payload_msg(jpeg_buffer.data(), jpeg_buffer.size());
-        auto result2 = socket_->send(payload_msg, zmq::send_flags::none);
+        auto result2 = socket_->send(payload_msg, flags_end);
 
         if (!result2.has_value()) {
-            log("WARN", "페이로드 전송 실패 (frame_id=" +
+            log("WARN", "AI 전송 페이로드 실패 (버퍼 포화, frame_id=" +
                 std::to_string(frame.frame_id) + ")");
             return false;
         }
@@ -226,7 +232,7 @@ bool ZmqSender::send_frame(const FrameData& frame) {
         return true;
     }
     catch (const zmq::error_t& e) {
-        log("ERROR", "ZMQ 전송 예외: " + std::string(e.what()));
+        log("ERROR", "ZMQ AI 전송 예외: " + std::string(e.what()));
         return false;
     }
 }

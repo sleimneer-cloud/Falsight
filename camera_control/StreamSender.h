@@ -1,11 +1,12 @@
 /**
  * @file StreamSender.h
- * @brief 클라이언트 스트리밍 담당 (ZMQ XPUB-SUB, 다중 포트 지원)
+ * @brief 클라이언트 스트리밍 담당 (ZMQ XPUB-SUB, 다중 포트 및 1:1 워커 스레드 지원)
  *
  * 설계 원칙:
- * - 카메라별 독립된 ZeroMQ XPUB 소켓 및 포트 할당 (예: CAM0=9001, CAM1=9002)
- * - 클라이언트 측의 렌더링 버퍼 꼬임 원천 차단
- * - 토픽별 구독자 수 카운트 및 카메라 제어
+ * - 카메라별 독립된 ZeroMQ XPUB 소켓 및 포트 할당 (예: CAM0=7000, CAM1=7001)
+ * - [핵심] 분배자(Dispatcher)가 메인 큐에서 프레임을 꺼내 카메라별 전담 큐로 분배
+ * - [핵심] 1:1 전담 워커 스레드가 인코딩을 병렬로 수행하여 CPU 병목 및 OOM 원천 차단
+ * - 큐 포화(Drop Policy) 방어 로직 적용
  */
 
 #ifndef STREAM_SENDER_H
@@ -61,7 +62,10 @@ private:
     //--------------------------------------------------------------------------
     // 내부 메서드
     //--------------------------------------------------------------------------
-    void send_loop();
+    // ★ 변경: 단일 send_loop() 대신 분배자와 전담 워커로 역할 분리
+    void dispatch_loop();                   // 메인 큐 -> 개별 카메라 큐로 프레임 분배
+    void worker_loop(int camera_id);        // 개별 카메라 큐 -> 인코딩 및 ZMQ 전송
+
     void subscriber_monitor_loop();
     void stats_loop();
     bool send_frame(const FrameData& frame);
@@ -78,20 +82,26 @@ private:
     uint16_t port_;
     int max_cameras_;
 
-    // ★ 다중 포트 지원: 카메라 수만큼 포트 주소를 담는 배열
+    // 다중 포트 지원: 카메라 수만큼 포트 주소를 담는 배열
     std::vector<std::string> endpoints_;
 
-    ThreadSafeQueue<FrameData>& queue_;
+    // ★ 변경: 외부에서 들어오는 메인 큐 (이름을 직관적으로 변경)
+    ThreadSafeQueue<FrameData>& main_queue_;
+
+    // ★ 추가: 카메라별 전담 내부 큐
+    std::vector<std::unique_ptr<ThreadSafeQueue<FrameData>>> worker_queues_;
 
     // ZeroMQ
     zmq::context_t context_;
 
-    // ★ 다중 소켓 지원: 카메라 수만큼 독립적인 소켓을 관리하는 배열
+    // 다중 소켓 지원: 카메라 수만큼 독립적인 소켓을 관리하는 배열
     std::vector<std::unique_ptr<zmq::socket_t>> sockets_;
     mutable std::mutex socket_mutex_;
 
-    // 스레드
-    std::thread worker_;
+    // ★ 스레드 구조 변경
+    std::thread dispatcher_thread_;              // 메인 큐 분배 스레드
+    std::vector<std::thread> worker_threads_;    // 카메라 대수만큼의 인코딩 워커 스레드
+
     std::thread subscriber_thread_;
     std::thread stats_thread_;
     std::atomic<bool> running_{ false };

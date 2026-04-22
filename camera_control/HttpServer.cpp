@@ -717,7 +717,7 @@ std::string HttpServer::find_recording_file(int camera_id, int64_t timestamp) {
 
 bool HttpServer::upload_clip(const std::string& filepath, const ClipRequest& request) {
     log("INFO", "[STEP 3] 업로드 준비");
-    log("INFO", "  파일: " + filepath);
+    log("INFO", "  원본 파일: " + filepath);
     log("INFO", "  대상: " + main_server_ip_ + ":" + std::to_string(main_server_port_));
 
     // 파일 읽기
@@ -769,21 +769,26 @@ bool HttpServer::upload_clip(const std::string& filepath, const ClipRequest& req
     client.set_read_timeout(UPLOAD_TIMEOUT_SEC, 0);
     client.set_write_timeout(UPLOAD_TIMEOUT_SEC, 0);
 
+    // ★ 추가된 로직: 메인 서버 규격에 맞춘 안전한 가상 파일명 생성 (예: fall_104_cam0.mp4)
+    std::string safe_filename = "fall_" + std::to_string(request.fall_id) +
+        "_cam" + std::to_string(request.camera_id) + ".mp4";
+
     std::string boundary = "----WebKitFormBoundary" + std::to_string(now_ms());
+
+    // ★ 수정된 로직: 원본 파일명(filepath) 대신 safe_filename을 폼 데이터 헤더에 삽입
     std::string body_prefix =
         "--" + boundary + "\r\n"
         "Content-Disposition: form-data; name=\"metadata\"\r\n"
         "Content-Type: application/json\r\n\r\n" +
         metadata.str() + "\r\n"
         "--" + boundary + "\r\n"
-        "Content-Disposition: form-data; name=\"video_file\"; filename=\"" +
-        fs::path(filepath).filename().string() + "\"\r\n"
+        "Content-Disposition: form-data; name=\"video_file\"; filename=\"" + safe_filename + "\"\r\n"
         "Content-Type: video/mp4\r\n\r\n";
 
     std::string full_body = body_prefix + video_data + "\r\n--" + boundary + "--\r\n";
 
     log("INFO", "[STEP 3] 전송 크기: " +
-        std::to_string(full_body.size() / 1024 / 1024) + " MB");
+        std::to_string(full_body.size() / 1024 / 1024) + " MB (파일명: " + safe_filename + ")");
 
     auto result = client.Post("/video/upload", full_body,
         ("multipart/form-data; boundary=" + boundary).c_str());

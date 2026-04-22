@@ -38,10 +38,10 @@
  //==============================================================================
 
 namespace Config {
-    constexpr int CAMERA_COUNT = 2;
-    constexpr int CAMERA_IDS[] = { 0, 1 };
+    constexpr int CAMERA_COUNT = 4;
+    constexpr int CAMERA_IDS[] = { 0, 1, 2, 3 };
     constexpr int MOTION_THRESHOLD = 5000;
-    constexpr int MAX_CAMERAS = 16;
+    constexpr int MAX_CAMERAS = 4;
 
     constexpr size_t QUEUE_SIZE = 30;
     constexpr size_t ZMQ_QUEUE_SIZE = 100;
