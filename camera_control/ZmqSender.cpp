@@ -95,35 +95,37 @@ bool ZmqSender::start() {
 }
 
 void ZmqSender::stop() {
-    if (!running_.load()) {
-        log("WARN", "실행 중이 아님 - stop() 무시됨");
-        return;
-    }
+    if (!running_.load()) return;
 
-    log("INFO", "종료 요청 수신");
-
-    // 종료 플래그 설정
+    // ZmqSender에 log() 함수가 없다면 생략하시거나 std::cout 등을 사용하세요.
+    // log("INFO", "종료 요청 수신"); 
     running_ = false;
 
-    // 스레드 종료 대기
-    if (worker_.joinable()) {
-        worker_.join();
+    // ★ 1. Linger 0
+    if (socket_) {
+        try { socket_->set(zmq::sockopt::linger, 0); }
+        catch (...) {}
     }
 
-    // 소켓 정리
+    // =========================================================================
+    // ★ 2. context_.shutdown() 완전 삭제! 
+    // =========================================================================
+
+    // ★ 3. 스레드 자연 종료 대기
+    if (worker_.joinable()) worker_.join();
+
+    // ★ 4. 연결 끊기 및 소켓 파괴
     if (socket_) {
-        socket_->close();
+        // (참고) 만약 ZmqSender에 endpoint_ 멤버 변수가 있다면 
+        // try { socket_->disconnect(endpoint_); } catch(...) {} 를 추가하셔도 좋습니다.
+        try { socket_->close(); }
+        catch (...) {}
         socket_.reset();
     }
 
-    connected_ = false;
-
-    // 최종 통계 출력
-    log("INFO", "=== 전송 통계 ===");
-    log("INFO", "전송 성공: " + std::to_string(sent_count_.load()));
-    log("INFO", "전송 실패: " + std::to_string(skip_count_.load()));
-    log("INFO", "모션 없음 스킵: " + std::to_string(no_motion_count_.load()));
-    log("INFO", "안전 종료 완료");
+    // ★ 5. 컨텍스트 완전 파괴
+    try { context_.close(); }
+    catch (...) {}
 }
 
 //==============================================================================
@@ -140,6 +142,8 @@ void ZmqSender::send_loop() {
         if (!running_.load()) {
             break;
         }
+        // ★ 소켓 유효성 확인 추가
+        if (!socket_) break;
 
         //----------------------------------------------------------------------
         // 모션 필터링
@@ -181,65 +185,54 @@ void ZmqSender::send_loop() {
 
 bool ZmqSender::send_frame(const FrameData& frame) {
     try {
-        //----------------------------------------------------------------------
-        // 1단계: JPEG 인코딩
-        //----------------------------------------------------------------------
         std::vector<uchar> jpeg_buffer;
         if (!encode_jpeg(frame.resized, jpeg_buffer)) {
-            log("ERROR", "JPEG 인코딩 실패 (frame_id=" +
-                std::to_string(frame.frame_id) + ")");
             return false;
         }
 
-        //----------------------------------------------------------------------
-        // 2단계: 패킷 헤더 생성
-        //----------------------------------------------------------------------
-        AIPacketHeader header;
+        AIPacketHeader header{};  // ← {} 초기화 유지
         header.camera_id = static_cast<uint8_t>(frame.camera_id);
-        header.padding[0] = 0;  // V2: quality_flag 예정
+        header.padding[0] = 0;
         header.padding[1] = 0;
         header.padding[2] = 0;
         header.timestamp_ms = static_cast<uint64_t>(frame.timestamp_ms);
         header.frame_id = frame.frame_id;
         header.jpeg_size = static_cast<uint32_t>(jpeg_buffer.size());
 
-        //----------------------------------------------------------------------
-        // 3단계: ZMQ 멀티파트 전송
-        //----------------------------------------------------------------------
-        // Part 1: Header (20 바이트)
+        // =====================================================================
+        // ★ 핵심 추가: 스레드 무한 대기(Blocking)를 막기 위해 무조건 dontwait 결합
+        // =====================================================================
+        const auto flags_more = zmq::send_flags::sndmore | zmq::send_flags::dontwait;
+        const auto flags_end = zmq::send_flags::dontwait;
+
+        // Part 1: Header
         zmq::message_t header_msg(&header, sizeof(AIPacketHeader));
-        auto result1 = socket_->send(header_msg, zmq::send_flags::sndmore);
+        auto result1 = socket_->send(header_msg, flags_more);
 
         if (!result1.has_value()) {
-            log("WARN", "헤더 전송 실패 (frame_id=" +
+            log("WARN", "AI 전송 헤더 실패 (버퍼 포화, frame_id=" +
                 std::to_string(frame.frame_id) + ")");
+
+            // ★ sndmore 상태 해제 - 빈 메시지로 강제 종료 (여기서도 dontwait 필수!)
+            zmq::message_t empty(0);
+            socket_->send(empty, flags_end);
             return false;
         }
 
-        // Part 2: JPEG Payload
+        // Part 2: Payload
         zmq::message_t payload_msg(jpeg_buffer.data(), jpeg_buffer.size());
-        auto result2 = socket_->send(payload_msg, zmq::send_flags::none);
+        auto result2 = socket_->send(payload_msg, flags_end);
 
         if (!result2.has_value()) {
-            log("WARN", "페이로드 전송 실패 (frame_id=" +
+            log("WARN", "AI 전송 페이로드 실패 (버퍼 포화, frame_id=" +
                 std::to_string(frame.frame_id) + ")");
             return false;
-        }
-
-        //----------------------------------------------------------------------
-        // 4단계: 상세 로그 (디버깅용, 10프레임마다)
-        //----------------------------------------------------------------------
-        if (sent_count_.load() % 10 == 0) {
-            log("DEBUG", "CAM" + std::to_string(frame.camera_id) +
-                " frame=" + std::to_string(frame.frame_id) +
-                " size=" + std::to_string(jpeg_buffer.size()) + "B");
         }
 
         return true;
-
     }
     catch (const zmq::error_t& e) {
-        log("ERROR", "ZMQ 전송 예외: " + std::string(e.what()));
+        log("ERROR", "ZMQ AI 전송 예외: " + std::string(e.what()));
         return false;
     }
 }

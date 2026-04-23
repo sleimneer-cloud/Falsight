@@ -13,12 +13,12 @@
  // ★ 추가: 스레드 간 큐(Queue)에서 주고받을 공통 프레임 데이터 구조체
  //==============================================================================
 struct FrameData {
-    int      camera_id;
-    int64_t  timestamp_ms;
-    uint32_t frame_id;
-    cv::Mat  raw;          // 원본 1920x1080
-    cv::Mat  resized;      // 리사이즈 640x480
-    bool     has_motion;   // 모션 감지 여부
+    int      camera_id = -1;
+    int64_t  timestamp_ms = 0;
+    uint32_t frame_id = 0;
+    cv::Mat  raw;
+    cv::Mat  resized;
+    bool     has_motion = false;
 };
 
 //==============================================================================
@@ -74,11 +74,11 @@ namespace PacketConfig {
     constexpr uint16_t HTTP_PORT = 8080;            // HTTP 서버 포트
 
     // JPEG 설정
-    constexpr int JPEG_QUALITY = 85;             // JPEG 압축 품질
+    constexpr int JPEG_QUALITY = 60;             // JPEG 압축 품질
     constexpr int AI_WIDTH = 640;                // AI용 해상도
     constexpr int AI_HEIGHT = 480;
-    constexpr int VIEWER_WIDTH = 1920;           // 클라이언트용 해상도
-    constexpr int VIEWER_HEIGHT = 1080;
+    constexpr int VIEWER_WIDTH = 640;           // 클라이언트용 해상도
+    constexpr int VIEWER_HEIGHT = 480;
 
 
     // 버퍼 크기
