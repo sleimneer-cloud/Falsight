@@ -45,3 +45,19 @@ class VideoEvidenceRepository:
         """)
         result = await self.session.execute(sql, {"cam_id": cam_id, "start": start_time, "end": end_time})
         return result.fetchall()
+
+    async def save_video_evidence(self, event_id: int, start_ms: int, end_ms: int, file_path: str, file_size: int):
+        sql = text("""
+            INSERT INTO VIDEO_EVIDENCE 
+            (event_id, clip_start_ms, clip_end_ms, file_path, file_size) 
+            VALUES (:event_id, :start, :end, :path, :size)
+        """)
+        await self.session.execute(sql, {
+            "event_id": event_id,
+            "start": start_ms,
+            "end": end_ms,
+            "path": file_path,
+            "size": file_size
+        })
+        await self.session.commit()
+
