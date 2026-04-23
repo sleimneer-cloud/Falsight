@@ -43,3 +43,4 @@ Release/
 *.task              # MediaPipe 모델 파일
 ai_server/data/
 ai_server/logs/
+debug/
