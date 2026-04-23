@@ -86,7 +86,7 @@ s       ender.send(camera_id=2, confidence=0.94, timestamp=1713340120000)
 
         return success
 
-    # ── 내부 메서드 ──────────────────────────────────────────
+    # 내부 메서드
 
     def _post_with_retry(self, payload: dict) -> bool:
         """재시도 포함 HTTP POST 전송"""

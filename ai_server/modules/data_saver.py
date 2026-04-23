@@ -127,7 +127,7 @@ class DataSaver:
             f"(cam={camera_id}, track={track_id}, conf={confidence:.3f})"
         )
 
-    # ── 내부 메서드 ──────────────────────────────────────────
+    # 내부 메서드
 
     def _save_csv(
         self,

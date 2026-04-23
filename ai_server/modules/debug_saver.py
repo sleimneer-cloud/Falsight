@@ -91,7 +91,7 @@ class DebugSaver:
             f"{ts}_f{self.frame_idx:05d}.jpg"
         )
 
-    # ── 공개 메서드 ──────────────────────────────────────────
+    # 공개 메서드
 
     def save_raw(self, frame: np.ndarray):
         """
@@ -136,7 +136,7 @@ class DebugSaver:
             for i, kp_17 in enumerate(keypoints_data):
                 lower_ok = lower_ok_flags[i] if i < len(lower_ok_flags) else False
 
-                # ── BBox ───────────────────────────────────
+                # BBox
                 if boxes is not None and i < len(boxes):
                     x1, y1, x2, y2 = map(int, boxes.xyxy[i].tolist())
                     color = LOWER_COLOR if lower_ok else SKIP_COLOR
@@ -149,7 +149,7 @@ class DebugSaver:
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1
                     )
 
-                # ── 관절 점 ────────────────────────────────
+                # 관절 점
                 for j, (x, y) in enumerate(kp_17):
                     if x == 0 and y == 0:
                         continue
@@ -159,7 +159,7 @@ class DebugSaver:
                     radius = max(2, int(conf * 5))
                     cv2.circle(vis, (int(x), int(y)), radius, KEYPOINT_COLOR, -1)
 
-                # ── 뼈대 선 ────────────────────────────────
+                # 뼈대 선
                 for a, b in SKELETON_EDGES:
                     xa, ya = kp_17[a]
                     xb, yb = kp_17[b]
@@ -178,7 +178,7 @@ class DebugSaver:
                         SKELETON_COLOR, 1
                     )
 
-            # ── 카메라 정보 워터마크 ───────────────────────
+            # 카메라 정보 워터마크
             cv2.putText(
                 vis,
                 f"CAM{self.camera_id} | f{self.frame_idx:05d}",

@@ -43,7 +43,7 @@ RESULT_NON_FALL  = "NON_FALL"
 SCALER_PATH = "models/fallvision_scaler_v11.pkl"
 
 
-# ── LSTM 모델 정의 ────────────────────────────────────────────
+# LSTM 모델 정의
 class FallLSTM(nn.Module):
     """
     학습 시 사용한 LSTM 구조와 동일하게 정의
@@ -68,7 +68,7 @@ class FallLSTM(nn.Module):
         return self.sigmoid(out)
 
 
-# ── FallDetector ─────────────────────────────────────────────
+# FallDetector
 class FallDetector:
     """
     PyTorch LSTM 모델 로드 및 낙상 판정
@@ -89,7 +89,7 @@ class FallDetector:
         self._load_model()
         self._load_scaler()
 
-    # ── 모델 로드 ─────────────────────────────────────────────
+    # 모델 로드
 
     def _load_model(self):
         """PyTorch LSTM 모델 로드"""
@@ -124,7 +124,7 @@ class FallDetector:
             logger.error(f"[Detector] 모델 로드 실패: {e}")
             raise RuntimeError(f"모델 로드 실패 — 서버 기동 중단: {e}")
 
-    # ── Scaler 로드 ───────────────────────────────────────────
+    # Scaler 로드
 
     def _load_scaler(self):
         """StandardScaler 로드 (학습 시 사용한 것과 동일)"""
@@ -142,7 +142,7 @@ class FallDetector:
             logger.error(f"[Detector] Scaler 로드 실패: {e}")
             self.scaler = None
 
-    # ── 추론 ──────────────────────────────────────────────────
+    # 추론
 
     def predict(self, buffer: np.ndarray) -> dict | None:
         """
@@ -174,7 +174,7 @@ class FallDetector:
                 logger.debug("[Detector] 더미 모드 추론")
 
             else:
-                # ── Scaler 적용 ──────────────────────────────
+                # Scaler 적용
                 if self.scaler is not None:
                     buffer_scaled = self.scaler.transform(
                         buffer.reshape(-1, N_FEATURES)
@@ -182,7 +182,7 @@ class FallDetector:
                 else:
                     buffer_scaled = buffer
 
-                # ── PyTorch LSTM 추론 ─────────────────────────
+                # PyTorch LSTM 추론
                 tensor = torch.tensor(
                     buffer_scaled[np.newaxis, ...],   # (1, 100, 34)
                     dtype=torch.float32
@@ -192,7 +192,7 @@ class FallDetector:
                     output = self.model(tensor)        # (1, 1)
                     confidence = float(output[0][0].cpu())
 
-            # ── 타임아웃 체크 ─────────────────────────────────
+            # 타임아웃 체크
             elapsed_ms = (time.time() - start) * 1000
             if elapsed_ms > INFERENCE_TIMEOUT_MS:
                 logger.warning(
@@ -201,7 +201,7 @@ class FallDetector:
                 )
                 return None
 
-            # ── 판정 ──────────────────────────────────────────
+            # 판정
             label = self._classify(confidence)
 
             logger.debug(

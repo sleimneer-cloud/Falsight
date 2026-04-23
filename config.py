@@ -7,62 +7,62 @@ Falsight AI 서버 전체 설정값 중앙 관리
       fallvision_best_model_v3.pt (PyTorch LSTM)
 """
 
-# 모델 설정
+# ── 모델 설정
 MODEL_PATH    = "models/fallvision_best_model_v11.pt"
 N_FEATURES    = 34        # COCO 17관절 × (x, y) = 34피처
 USE_MEDIAPIPE = False     # YOLO11 Pose 사용
 
-# 실행 환경
+# ── 실행 환경
 USE_GPU = False   # CPU: False / GPU(RTX 3060): True
 
-# 입력 shape
+# ── 입력 shape
 FRAME_WINDOW  = 50     # 슬라이딩 윈도우 프레임 수
 
-# 판정 임계값
+# ── 판정 임계값
 FALL_THRESHOLD      = 0.70   # 이 값 이상이면 FALL
 UNCERTAIN_MIN       = 0.60   # UNCERTAIN 구간 하한
 UNCERTAIN_MAX       = 0.70   # UNCERTAIN 구간 상한
 
 
-# 카메라 설정
+# ── 카메라 설정 ─
 CAMERA_COUNT  = 4            # 연결된 카메라 수
 CAMERA_IDS    = [1, 2, 3, 4] # 1-indexed (ZMQ 수신 시 0-indexed -> +1 변환)
 
-# 영상 해상도 (Node1 확정 스펙)
+# ── 영상 해상도 (Node1 확정 스펙)
 AI_RESOLUTION = (640, 480)   # Node1 전송 해상도 확정값
 
-# 타임아웃
+# ── 타임아웃
 INFERENCE_TIMEOUT_MS = 300   # 추론 제한 시간 (ms)
 
-# 알람 중복 방지
+# ── 알람 중복 방지
 ALARM_COOLDOWN_SEC = 20      # 동일 camera_id 재알람 대기 시간
 
-# 디버그 설정
+# ── 디버그 설정
 DEBUG_SAVE_FRAMES = True   # 운영 시 False로 변경
 
-# ZMQ 수신
+# ── ZMQ 수신
 # AI 서버가 bind -> Node1이 connect
 ZMQ_HOST = "0.0.0.0"
 ZMQ_PORT = 9001
 
-# Node 3 (메인 서버) HTTP POST
+# ── Node 3 (메인 서버) HTTP POST
 NODE3_HOST          = "10.10.10.113"
 NODE3_PORT          = 8000
 NODE3_FALL_ENDPOINT = f"http://{NODE3_HOST}:{NODE3_PORT}/api/fall-event"
 NODE3_RETRY_COUNT   = 3        # 전송 실패 시 재시도 횟수
 
-# 자동 저장 경로
+# ── 자동 저장 경로
 SAVE_DIR_RAW        = "data/test_collected/raw"
 SAVE_DIR_FALL       = "data/test_collected/labeled/fall"
 SAVE_DIR_UNCERTAIN  = "data/test_collected/labeled/uncertain"
 SAVE_DIR_NON_FALL   = "data/test_collected/labeled/non_fall"
 SAVE_DIR_RETRAIN    = "data/test_collected/retrain_ready"
 
-# SQLite (재학습 데이터 관리)
+# ── SQLite (재학습 데이터 관리)
 # Python 내장 모듈, 별도 설치 불필요
 # 서버 PC 이전 시 db 파일만 복사하면 됨
 SQLITE_DB_PATH = "data/falsight_ai.db"
 
-# 로그 경로
+# ── 로그 경로 ─
 LOG_DIR  = "logs"
 LOG_FILE = "logs/ai_server.log"

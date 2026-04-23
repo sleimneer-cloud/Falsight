@@ -45,12 +45,20 @@ COCO_KEYPOINTS = [
     'Left Ankle',     # 15
     'Right Ankle'     # 16
 ]
-
 # 하체 관절 인덱스 (엉덩이 ~ 발목)
 LOWER_BODY_IDX = [11, 12, 13, 14, 15, 16]
 
+# 핵심 관절 인덱스 (어깨 + 엉덩이)
+UPPER_CORE_IDX = [5, 6, 11, 12]
+
 # 하체 감지 최소 confidence
 LOWER_BODY_CONF_THRESHOLD = 0.3
+
+# 전체 유효 관절 판단 기준
+JOINT_CONF_THRESHOLD = 0.5
+
+# 전체 유효 관절 최소 개수
+MIN_VALID_JOINTS = 10
 
 # 빈 반환값 상수
 _EMPTY = ([], None, np.zeros((0, 17, 2)), np.zeros((0, 17)))
@@ -124,16 +132,23 @@ class KeypointExtractor:
 
             for i, kp_17 in enumerate(keypoints_data):
 
-                # ── 전신 필터: 하체 confidence 체크 ─────────────
-                lower_conf = keypoints_conf[i][LOWER_BODY_IDX].mean()
-                if lower_conf < LOWER_BODY_CONF_THRESHOLD:
+                kp_conf = keypoints_conf[i]  # (17,)
+
+                total_valid = (kp_conf > JOINT_CONF_THRESHOLD).sum()
+                core_valid = (kp_conf[UPPER_CORE_IDX] > LOWER_BODY_CONF_THRESHOLD).sum()
+                lower_conf = kp_conf[LOWER_BODY_IDX].mean()
+
+                if total_valid < MIN_VALID_JOINTS or \
+                        core_valid < 3 or \
+                        lower_conf < LOWER_BODY_CONF_THRESHOLD:
                     logger.debug(
-                        f"[Extractor] 전신 미감지 → 스킵 "
-                        f"(lower_conf={lower_conf:.2f} < {LOWER_BODY_CONF_THRESHOLD})"
+                        f"[Extractor] 감지 불충분 → 스킵 "
+                        f"(total_valid={total_valid}, core_valid={core_valid}, "
+                        f"lower_conf={lower_conf:.2f})"
                     )
                     continue
 
-                # ── Keypoint 추출 (픽셀 좌표 그대로) ────────────
+                # Keypoint 추출 (픽셀 좌표 그대로)
                 # Scaler가 픽셀 좌표 기준으로 학습됨 → 정규화 안 함
                 kp = kp_17.flatten().astype(np.float32)  # (34,)
 
