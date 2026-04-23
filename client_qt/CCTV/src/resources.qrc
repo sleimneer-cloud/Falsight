@@ -1,0 +1,8 @@
+<RCC>
+    <qresource prefix="/">
+        <file>qml/main.qml</file>
+        <file>qml/LoginView.qml</file>
+        <file>qml/MonitorView.qml</file>
+        <file>qml/PlaybackView.qml</file>
+        <file>qml/SettingsView.qml</file> </qresource>
+</RCC>
