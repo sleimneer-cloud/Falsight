@@ -9,6 +9,34 @@ Item {
     property bool isSingleView: false
     property int expandedIndex: 0
 
+    // 👉 1. 토스트 알림창 데이터를 담을 모델 (대기열 역할 대체)
+    ListModel { id: alertModel }
+
+    // 👉 2. 백엔드 시그널 수신부
+    Connections {
+        target: sysController
+        
+        function onEmergencyFallDetected(camId, fallId) {
+            // 중복 스팸 방지: 이미 떠있는 동일한 사고 번호면 무시
+            for (var i = 0; i < alertModel.count; i++) {
+                if (alertModel.get(i).fallId === fallId) return;
+            }
+
+            console.log("🚨 [토스트 알림 추가] CAM:", camId, " FallID:", fallId)
+            
+            // 모델에 새 알림 추가 (자동으로 우측 하단에 생성됨)
+            alertModel.append({ "camId": camId, "fallId": fallId })
+        }
+    }
+
+    // 👉 3. 특정 카메라가 현재 알림 상태인지 체크하는 함수 (테두리 색상용)
+    function isCameraAlerting(cameraIndex) {
+        for (var i = 0; i < alertModel.count; i++) {
+            if (alertModel.get(i).camId === (cameraIndex + 1)) return true;
+        }
+        return false;
+    }
+
     ColumnLayout {
         anchors.fill: parent
         spacing: 0
@@ -39,7 +67,6 @@ Item {
                     text: "설정"
                     contentItem: Text { text: parent.text; color: "#8A94A6"; font.pixelSize: 14; horizontalAlignment: Text.AlignHCenter }
                     background: Rectangle { color: "transparent" }
-                    // 👉 수정: 설정 화면으로 이동 (오른쪽에서 왼쪽으로 슬라이드)
                     onClicked: stackView.push("SettingsView.qml")
                 }
                 Button {
@@ -88,14 +115,15 @@ Item {
                     background: Rectangle { color: "#2C75FF"; radius: 5; implicitWidth: 80; implicitHeight: 30 }
                 }
                 Button {
-                    text: "과거 영상"
+                    text: "이벤트 영상"
                     contentItem: Text { text: parent.text; color: "#8A94A6"; font.pixelSize: 13; horizontalAlignment: Text.AlignHCenter }
                     background: Rectangle { color: "#1C2434"; radius: 5; implicitWidth: 80; implicitHeight: 30 }
                     onClicked: stackView.push("PlaybackView.qml")
                 }
             }
         }
-// ==========================================
+        
+        // ==========================================
         // 3. 비디오 격자 및 하단 채널 바 (통합 영역)
         // ==========================================
         ColumnLayout {
@@ -103,7 +131,6 @@ Item {
             Layout.fillHeight: true
             spacing: 0
 
-            // 비디오 격자 영역
             Item {
                 Layout.fillWidth: true
                 Layout.fillHeight: true
@@ -127,16 +154,34 @@ Item {
                             visible: !isSingleView || expandedIndex === index
                             color: "#141B2D"
                             radius: 8
-                            border.color: (isSingleView && expandedIndex === index) ? "#2C75FF" : "#1C2434"
-                            border.width: 1
+                            
+                            // 👉 4. 테두리 색상: 현재 토스트 알림 목록에 이 카메라가 있으면 빨간색!
+                            border.color: {
+                                if (isCameraAlerting(index)) {
+                                    return "#FF4444"
+                                } else if (isSingleView && expandedIndex === index) {
+                                    return "#2C75FF"
+                                } else {
+                                    return "#1C2434"
+                                }
+                            }
+                            border.width: isCameraAlerting(index) ? 3 : 1
+                            
+                            // 빨간 테두리 깜빡임 효과
+                            SequentialAnimation on border.color {
+                                loops: Animation.Infinite
+                                running: isCameraAlerting(index)
+                                ColorAnimation { to: "#FF4444"; duration: 400 }
+                                ColorAnimation { to: "#8B0000"; duration: 400 }
+                            }
+
                             property int frameCounter: 0
 
-                            // 👉 추가: C++에서 frameUpdated 시그널이 오면 카운터 증가
                             Connections {
                                 target: sysController
+                              
                                 function onFrameUpdated(camId) {
-                                    // 현재 그리는 인덱스와 일치할 때만 갱신
-                                    if (camId === index) {
+                                     if (parseInt(camId) === parseInt(index)) {  
                                         videoFrame.frameCounter++
                                     }
                                 }
@@ -152,13 +197,10 @@ Item {
 
                             Image {
                                 anchors.fill: parent
-                                anchors.margins: 1 // 테두리를 덮지 않도록
-                                fillMode: Image.PreserveAspectFit // 비율 유지
+                                anchors.margins: 1 
+                                fillMode: Image.PreserveAspectFit 
                                 asynchronous: false
-                                cache: false // 실시간 스트리밍이므로 캐싱 끄기
-                                
-                                // C++ 프로바이더 호출 ("image://cctv/채널번호")
-                                // 뒤에 frameCounter를 붙여야 QML이 이미지가 바뀐 줄 알고 다시 요청합니다.
+                                cache: false 
                                 source: "image://cctv/" + index + "?id=" + videoFrame.frameCounter
                             }
 
@@ -183,7 +225,7 @@ Item {
             // ==========================================
             Rectangle {
                 Layout.fillWidth: true
-                implicitHeight: 90 // 버튼을 추가하기 위해 높이를 40에서 90으로 확장
+                implicitHeight: 90 
                 color: "#0B111E"
                 visible: isSingleView
 
@@ -192,7 +234,6 @@ Item {
                     anchors.leftMargin: 25; anchors.rightMargin: 25; anchors.topMargin: 5; anchors.bottomMargin: 5
                     spacing: 0
 
-                    // 4-1. 타임라인 슬라이더 영역
                     RowLayout {
                         Layout.fillWidth: true
                         spacing: 15
@@ -209,7 +250,7 @@ Item {
                             Layout.fillWidth: true
                             from: 0
                             to: 100
-                            value: 100 // 기본적으로 가장 최근(오른쪽)에 위치
+                            value: 100 
                             
                             background: Rectangle {
                                 implicitHeight: 4; radius: 2; color: "#263043"
@@ -235,43 +276,17 @@ Item {
                         }
                     }
 
-                    // 4-2. 재생 컨트롤 버튼 (-10초, 일시정지, +10초)
                     RowLayout {
                         Layout.alignment: Qt.AlignHCenter
                         spacing: 30
 
-                        // 10초 뒤로 가기
-                        Button {
-                            text: "⏪ 10s"
-                            contentItem: Text { text: parent.text; color: "white"; font.pixelSize: 13; horizontalAlignment: Text.AlignHCenter }
-                            background: Rectangle { color: "transparent" }
-                            onClicked: {
-                                // 슬라이더 값을 감소시키고 C++로 전송 (from 값 이하로 내려가지 않도록 Math.max 사용)
-                                liveSeekSlider.value = Math.max(liveSeekSlider.from, liveSeekSlider.value - 10)
-                                sysController.seekVideo(expandedIndex, liveSeekSlider.value)
-                            }
-                        }
-
-                        // 재생 / 일시정지
                         Button {
                             id: livePlayBtn
-                            property bool isPlaying: true // 실시간이므로 기본값은 재생 중
+                            property bool isPlaying: true 
                             text: isPlaying ? "⏸" : "▶"
                             contentItem: Text { text: parent.text; color: "white"; font.pixelSize: 16; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
                             background: Rectangle { color: "#2C75FF"; radius: 20; implicitWidth: 40; implicitHeight: 40 }
                             onClicked: isPlaying = !isPlaying
-                        }
-
-                        // 10초 앞으로 가기
-                        Button {
-                            text: "10s ⏩"
-                            contentItem: Text { text: parent.text; color: "white"; font.pixelSize: 13; horizontalAlignment: Text.AlignHCenter }
-                            background: Rectangle { color: "transparent" }
-                            onClicked: {
-                                // 슬라이더 값을 증가시키고 C++로 전송 (to 값 이상으로 올라가지 않도록 Math.min 사용)
-                                liveSeekSlider.value = Math.min(liveSeekSlider.to, liveSeekSlider.value + 10)
-                                sysController.seekVideo(expandedIndex, liveSeekSlider.value)
-                            }
                         }
                     }
                 }
@@ -291,7 +306,6 @@ Item {
                     anchors.margins: 15
                     spacing: 10
                     Repeater {
-                        // 👉 쌍따옴표 누락 에러 수정됨! ("CAM 3" -> "CAM 3")
                         model: ["CAM 1", "CAM 2", "CAM 3", "CAM 4"]
                         Button {
                             Layout.fillWidth: true
@@ -312,4 +326,101 @@ Item {
             }
         } 
     } 
+
+    // ==========================================
+    // 🚨 6. 토스트 알림 리스트 뷰 (화면 우측 하단 고정)
+    // ==========================================
+    ListView {
+        id: toastList
+        width: 320
+        height: parent.height - 100 // 상단 여백 확보
+        anchors.right: parent.right
+        anchors.bottom: parent.bottom
+        anchors.margins: 20
+        spacing: 15
+        
+        // 데이터가 밑에서부터 위로 쌓이게 만듦
+        verticalLayoutDirection: ListView.BottomToTop
+        interactive: false // 스크롤 비활성화 (토스트는 고정)
+        
+        model: alertModel
+
+        // 애니메이션 효과 (부드럽게 등장)
+        add: Transition {
+            NumberAnimation { property: "x"; from: 350; duration: 400; easing.type: Easing.OutBack }
+            NumberAnimation { property: "opacity"; from: 0; to: 1; duration: 400 }
+        }
+        remove: Transition {
+            NumberAnimation { property: "opacity"; to: 0; duration: 300 }
+        }
+
+        delegate: Rectangle {
+            width: toastList.width
+            height: 120
+            color: "#141B2D"
+            border.color: "#FF4444"
+            border.width: 2
+            radius: 8
+
+            ColumnLayout {
+                anchors.fill: parent
+                anchors.margins: 15
+                spacing: 8
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    Text { text: "🚨 긴급 낙상 감지!"; color: "#FF4444"; font.pixelSize: 16; font.bold: true }
+                    Item { Layout.fillWidth: true }
+                    Text { text: "CAM " + model.camId; color: "white"; font.pixelSize: 16; font.bold: true }
+                }
+                
+                Text { text: "사고 번호: #" + model.fallId; color: "#8A94A6"; font.pixelSize: 13 }
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    Layout.topMargin: 5
+                    spacing: 10
+
+                    Button {
+                        Layout.fillWidth: true
+                        text: "닫기"
+                        contentItem: Text { text: parent.text; color: "white"; font.pixelSize: 13; horizontalAlignment: Text.AlignHCenter }
+                        background: Rectangle { color: "#4A5568"; radius: 6; implicitHeight: 30 }
+                        onClicked: {
+                            alertModel.remove(index) // 알림 카드 삭제
+                            checkAndStopAlarm()
+                        }
+                    }
+
+                    Button {
+                        Layout.fillWidth: true
+                        text: "영상 확인"
+                        contentItem: Text { text: parent.text; color: "white"; font.pixelSize: 13; font.bold: true; horizontalAlignment: Text.AlignHCenter }
+                        background: Rectangle { color: "#FF4444"; radius: 6; implicitHeight: 30 }
+                        onClicked: {
+                            // 영상 재생 화면으로 이동하면서 데이터 전달
+                            var selectedCam = model.camId
+                            var selectedFall = model.fallId
+                            
+                            alertModel.remove(index) // 확인했으니 카드 삭제
+                            checkAndStopAlarm()
+                            
+                            stackView.push("PlaybackView.qml", {
+                                "autoPlayTargetCamId": selectedCam,
+                                "autoPlayTargetFallId": selectedFall
+                            })
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 👉 7. 알림이 모두 지워졌는지 확인하고 아두이노 끄는 함수
+    function checkAndStopAlarm() {
+        if (alertModel.count === 0) {
+            console.log("모든 알림 확인 완료 -> 아두이노 알람 해제")
+            sysController.stopArduinoAlarm() // 백엔드 아두이노 끄기 함수 호출
+        }
+    }
 }

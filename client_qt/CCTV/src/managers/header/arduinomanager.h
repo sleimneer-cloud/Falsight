@@ -11,10 +11,9 @@ class ArduinoManager : public QObject {
 public:
     explicit ArduinoManager(QObject *parent = nullptr);
     ~ArduinoManager();
-
-    // 시리얼 포트 연결 (리눅스는 보통 "/dev/ttyACM0" 또는 "/dev/ttyUSB0")
     bool connectDevice(const QString &portName, int baudRate = QSerialPort::Baud9600);
     void disconnectDevice();
+    void stopAlarm();
 
 public slots:
     // 알람 작동 명령 전송 ("ALARM_ON\n")
